@@ -1,6 +1,10 @@
 // Handoff Go Coder watch conformance test (mock harness, no LLM).
 // Run: node tests/watch.test.mjs
 import assert from "node:assert/strict";
+import { cpSync, mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { parseInterval, parseWatchCommand, WATCH_DEFAULT_SECONDS, WATCH_TICK_PROMPT } from "../skills/handoff-go/watch.mjs";
 import ompAdapter from "../skills/handoff-go/adapters/omp.mjs";
 import piAdapter from "../skills/handoff-go/adapters/pi.mjs";
@@ -123,6 +127,25 @@ for (const adapter of [ompAdapter, piAdapter]) {
   assert.deepEqual(stopResult, handled, `${name}: stop consumed`);
   assert.ok(s.ctxCleared.length + globalThis.__hgCleared.length > clearedBefore, `${name}: stop clears timer`);
 }
+
+// Reachability: adapters `import "../watch.mjs"`, so the core must be copied to
+// the harness root (`.omp/watch.mjs`) next to `.omp/extensions/`. This test
+// copies exactly what the docs tell the user to, then loads the adapter.
+const reachRoot = mkdtempSync(join(tmpdir(), "hgwatch-"));
+const reachCopy = (from, to) => cpSync(join(process.cwd(), from), join(reachRoot, to), { recursive: true });
+mkdirSync(join(reachRoot, ".omp/extensions"), { recursive: true });
+mkdirSync(join(reachRoot, ".pi/extensions"), { recursive: true });
+reachCopy("skills/handoff-go/adapters/omp.mjs", ".omp/extensions/handoff-go-watch.mjs");
+reachCopy("skills/handoff-go/adapters/pi.mjs", ".pi/extensions/handoff-go-watch.mjs");
+
+// With the core copied as documented, the adapter `import "../watch.mjs"` from
+// `.omp/extensions/` resolves to `.omp/watch.mjs`, so both adapters load.
+reachCopy("skills/handoff-go/watch.mjs", ".omp/watch.mjs");
+reachCopy("skills/handoff-go/watch.mjs", ".pi/watch.mjs");
+const ompMod = await import(pathToFileURL(join(reachRoot, ".omp/extensions/handoff-go-watch.mjs")));
+const piMod = await import(pathToFileURL(join(reachRoot, ".pi/extensions/handoff-go-watch.mjs")));
+assert.equal(typeof ompMod.default, "function", "OMP adapter loads and exports a factory");
+assert.equal(typeof piMod.default, "function", "Pi adapter loads and exports a factory");
 
 // restore timers
 globalThis.setInterval = realSetInterval;

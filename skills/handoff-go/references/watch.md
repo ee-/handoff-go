@@ -79,10 +79,18 @@ The adapter files ship in the skill package (`adapters/omp.mjs`,
 load step:
 
 ```sh
-mkdir -p .omp/extensions && cp <skill>/adapters/omp.mjs .omp/extensions/handoff-go-watch.mjs
-mkdir -p .pi/extensions && cp <skill>/adapters/pi.mjs .pi/extensions/handoff-go-watch.mjs
+mkdir -p .omp/extensions
+cp <skill>/watch.mjs .omp/watch.mjs
+cp <skill>/adapters/omp.mjs .omp/extensions/handoff-go-watch.mjs
+
+mkdir -p .pi/extensions
+cp <skill>/watch.mjs .pi/watch.mjs
+cp <skill>/adapters/pi.mjs .pi/extensions/handoff-go-watch.mjs
 ```
 
-where `<skill>` is the installed Handoff Go skill package path. No other harness
+The shared core must be copied to the harness root (`.omp/watch.mjs` /
+`.pi/watch.mjs`) because the adapter imports `../watch.mjs` relative to its
+`.omp/extensions/`/`.pi/extensions/` location. Copying only the adapter file
+would leave that import unresolved. No other harness
 needs an adapter copy: Claude Code, OpenCode, DeepSeek Harness, and Codex are
 driven by skill instructions and their native capability (see the table above).
