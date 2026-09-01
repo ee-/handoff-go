@@ -189,6 +189,8 @@ def main() -> None:
           "Coder workflow contains self-routing")
     check("Next Actor: ARCHITECT" not in read(SKILL_ROOT / "references/architect.md"),
           "Architect workflow contains self-routing")
+    check("Next Actor: OWNER" not in protocol,
+          "protocol routes to Owner as an executable role")
 
     failures = []
     for path in text_files():

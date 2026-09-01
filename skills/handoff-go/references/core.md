@@ -26,10 +26,18 @@ chat context during the normal loop.
 
 ### Owner
 
-The human product, business, and high-authority principal. Owner authority
-includes material objective or invariant changes, new destructive actions,
-external egress, publication, deployment, permissions, secrets, spend,
-unresolved architecture forks, and explicit promotion gates.
+The human product, business, and high-authority principal and gate. Owner
+authority includes material objective or invariant changes; destructive or
+irreversible actions not already authorized; new or policy-sensitive external
+data egress; publication or production deployment; permission or
+credential-scope changes; new secret access or disclosure authority; material
+spend or new paid resources; unresolved product, business, or architecture
+decisions outside Architect authority; and explicit human promotion gates.
+
+Routine operations already authorized by trusted governance or the current
+Work Order — normal GitHub access, dependency fetching, tests, permitted API
+calls — do not require Owner approval merely because they use network access or
+credentials.
 
 ### Architect
 
@@ -92,17 +100,15 @@ If trusted governance or role provenance cannot be established, fail closed.
 It never means “guess something useful to do.” The user may provide a pointer
 for diagnosis, but pointers are not required in the normal workflow.
 
-When state is routed to `OWNER` and the immediately preceding interaction
-presents one exact bounded Owner action, the Owner's `go` authorizes that exact
-action. Multiple choices, new material decisions, ambiguous scope, or newly
-destructive authority require a bounded `OWNER_ACTION_REQUIRED` packet.
+`go` resolves Architect or Coder only. Human authority is requested through
+`OWNER_ACTION_REQUIRED`, never by an Owner `go` invocation.
 
 ## Routing
 
 Every handoff records:
 
 ```text
-Next Actor: CODER | ARCHITECT | OWNER | NONE
+Next Actor: CODER | ARCHITECT | NONE
 ```
 
 Use the latest applicable trusted routing record. Free-form discussion does
@@ -115,6 +121,15 @@ available native continuation; that is not a handoff.
 
 Before stopping for another actor, durably record why the role stopped, what
 remains, the next actor, and enough state for rediscovery without chat relay.
+
+### Owner is a gate, not a role
+
+`OWNER_ACTION_REQUIRED` requests a bounded human decision; it is not a routing
+target. The requesting Architect keeps ownership, records the exact decision
+needed and a wake condition, and resumes routing once the decision is recorded.
+The Architect persists and interprets the human decision before downstream work
+relies on it. Waiting for human authority is not a handoff and writes no
+`Next Actor`.
 
 ## Contract stability
 

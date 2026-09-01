@@ -26,8 +26,11 @@ assignees: []
 
 # Security / Authority Envelope
 
-Name authorized external effects and Owner/human gates for governance,
-security, workflow, CODEOWNERS, permission, or credential changes.
+Name authorized external effects and any Owner/human gates. Changes to
+`AGENTS.md`, Handoff Go, security policy, workflows, CODEOWNERS, rulesets,
+permissions, or credentials are governance-sensitive and require independent
+Architect review; an Owner gate is needed only when the change crosses an Owner
+authority boundary.
 
 # Implementation Guidance
 

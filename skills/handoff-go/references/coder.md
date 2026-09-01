@@ -79,8 +79,6 @@ SECURITY_BLOCKED
 Next Actor: ARCHITECT
 ```
 
-Use `Next Actor: OWNER` when only the Owner can grant the missing authority.
-
 ## Implement
 
 After `SECURITY_PREFLIGHT: PASS`, inspect, implement, debug, test, and collect
@@ -96,8 +94,9 @@ escalate before continuing. A changed implementation needs a new reviewed head.
 For nontrivial work, push a safe checkpoint or open a draft PR early. A
 temporary CI/API wait records `Retry Owner: CODER / Wake Condition / Retry At /
 Budget / Fallback` and uses an available native wait or scheduler. It is not a
-handoff and writes no `Next Actor`. Route to Architect or Owner only when a
-decision or authority is required. After an external-write timeout, query by
+handoff and writes no `Next Actor`. Route to Architect only when a decision or
+authority is required; the Architect resolves it or raises an
+`OWNER_ACTION_REQUIRED` gate. After an external-write timeout, query by
 operation key. Never blindly retry an irreversible or non-idempotent effect;
 block when its outcome cannot be determined safely.
 
