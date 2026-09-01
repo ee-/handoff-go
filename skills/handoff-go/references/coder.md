@@ -8,7 +8,7 @@ Read after `core.md` only when the trusted role gate resolves `CODER`.
    default branch or immutable ref.
 2. Inspect open Issues/comments, open PRs, reviews/comments, current heads, and
    relevant branches.
-3. Find work whose latest applicable trusted routing is `Next Actor: CODER`.
+3. Find work whose latest applicable trusted route assigns `CODER`.
 4. Prefer resumable in-progress work; otherwise use explicit dependency and
    priority, then the oldest ready contract.
 5. Escalate rather than choose when contracts conflict or authority is unclear.
@@ -94,11 +94,12 @@ changed, preserve the current HEAD/evidence and replan, acknowledge, or
 escalate before continuing. A changed implementation needs a new reviewed head.
 
 For nontrivial work, push a safe checkpoint or open a draft PR early. A
-temporary CI/API wait records `condition / retry owner / retry time / budget /
-fallback` and `Next Actor: CODER` unless a decision is needed. After an
-external-write timeout, query by operation key. Never blindly retry an
-irreversible or non-idempotent effect; block when its outcome cannot be
-determined safely.
+temporary CI/API wait records `Retry Owner: CODER / Wake Condition / Retry At /
+Budget / Fallback` and uses an available native wait or scheduler. It is not a
+handoff and writes no `Next Actor`. Route to Architect or Owner only when a
+decision or authority is required. After an external-write timeout, query by
+operation key. Never blindly retry an irreversible or non-idempotent effect;
+block when its outcome cannot be determined safely.
 
 Use `Closes #<issue>` only when merge truly completes the contract.
 

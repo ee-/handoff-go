@@ -108,6 +108,11 @@ Next Actor: CODER | ARCHITECT | OWNER | NONE
 Use the latest applicable trusted routing record. Free-form discussion does
 not override it. Contradictory routing fails closed.
 
+`Next Actor` transfers ownership to a different role. It never names the
+current role or acts as a retry timer. When the current role retains ownership,
+remain active or record `Retry Owner / Wake Condition / Retry At` and arrange an
+available native continuation; that is not a handoff.
+
 Before stopping for another actor, durably record why the role stopped, what
 remains, the next actor, and enough state for rediscovery without chat relay.
 

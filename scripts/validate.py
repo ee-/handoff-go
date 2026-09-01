@@ -65,7 +65,6 @@ REQUIRED_TEXT = {
         "Next Actor: ARCHITECT",
         "Repository: <owner/name>",
         "Worktree: CLEAN | KNOWN_CHANGES | BLOCKED",
-        "query by operation key",
         "AC-n -> observed evidence",
     ),
     SKILL_ROOT / "references/adoption.md": (
@@ -180,8 +179,16 @@ def main() -> None:
         "Contradictory routing fails closed",
         "closed-unmerged PR is not success",
         "Never blindly retry an irreversible or non-idempotent effect",
+        "query by operation key",
+        "Next Actor` transfers ownership to a different role",
+        "It is not a handoff and writes no `Next Actor`",
     ):
         check(behavior in protocol, f"acceptance behavior missing: {behavior}")
+
+    check("Next Actor: CODER" not in read(SKILL_ROOT / "references/coder.md"),
+          "Coder workflow contains self-routing")
+    check("Next Actor: ARCHITECT" not in read(SKILL_ROOT / "references/architect.md"),
+          "Architect workflow contains self-routing")
 
     failures = []
     for path in text_files():
