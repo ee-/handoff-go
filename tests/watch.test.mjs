@@ -5,44 +5,53 @@ import { parseInterval, parseWatchCommand, WATCH_DEFAULT_SECONDS, WATCH_TICK_PRO
 import ompAdapter from "../skills/handoff-go/adapters/omp.mjs";
 import piAdapter from "../skills/handoff-go/adapters/pi.mjs";
 
-function makePi() {
+// Patch global timers once so both adapters' timers are observable (Pi uses raw
+// setInterval; OMP uses the managed ctx.setInterval).
+const realSetInterval = globalThis.setInterval;
+const realClearInterval = globalThis.clearInterval;
+globalThis.__hgIntervals = [];
+globalThis.__hgCleared = [];
+globalThis.setInterval = (fn, ms) => { globalThis.__hgIntervals.push({ fn, ms }); return 5000 + globalThis.__hgIntervals.length; };
+globalThis.clearInterval = (id) => { globalThis.__hgCleared.push(id); };
+
+function makeEnv() {
   const handlers = {};
   const sent = [];
-  const cleared = [];
-  let now = 0;
+  const ctxIntervals = [];
+  const ctxCleared = [];
   const api = {
     on(event, h) { (handlers[event] ??= []).push(h); },
     sendMessage(msg, opts) { sent.push({ msg, opts }); return Promise.resolve(); },
-    clearTimer(id) { cleared.push(id); },
-    _handlers: handlers,
-    _sent: sent,
-    _cleared: cleared,
-    _emit(event, ctx) { for (const h of handlers[event] ?? []) { const r = h({}, ctx); if (r && r.then) return r; } },
   };
   const ctx = {
-    source: "interactive",
-    text: "",
-    isIdle: () => true,
-    setInterval: (fn, ms) => { api._intervalMs = ms; api._intervalFn = fn; return 7; },
-    clearTimer: (id) => cleared.push(id),
     ui: { notify: () => {} },
+    mode: "tui",
+    cwd: "/tmp",
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    // managed timer context (OMP)
+    setInterval(fn, ms) { ctxIntervals.push({ fn, ms }); return 7000 + ctxIntervals.length; },
+    clearTimer(id) { ctxCleared.push(id); },
   };
-  return { api, ctx };
+  return { api, ctx, handlers, sent, ctxIntervals, ctxCleared };
 }
 
-function run(adapter, input, ctxAdjust) {
-  const { api, ctx } = makePi();
-  if (ctxAdjust) ctxAdjust(ctx);
-  adapter(api);
-  // emit session_start, then the input, then session_shutdown
-  api._emit("session_start", ctx);
-  ctx.text = input;
-  api._emit("input", ctx);
-  api._emit("session_shutdown", ctx);
-  return { api, ctx };
+function emit(env, name, event) {
+  let r;
+  for (const h of env.handlers[name] ?? []) r = h(event, env.ctx);
+  return r;
 }
 
-// --- shared core ---
+async function run(adapter, text, source = "interactive", opts = {}) {
+  const env = makeEnv();
+  adapter(env.api);
+  emit(env, "session_start", {});
+  const inputResult = await emit(env, "input", { text, source });
+  if (opts.shutdown !== false) emit(env, "session_shutdown", {});
+  return { env, inputResult };
+}
+
+// ---- shared core ----
 assert.equal(parseInterval(""), WATCH_DEFAULT_SECONDS, "default 60");
 assert.equal(parseInterval("60s"), 60);
 assert.equal(parseInterval("1m"), 60);
@@ -51,56 +60,72 @@ assert.equal(parseInterval("1h"), 3600);
 assert.equal(parseInterval("30s"), null, "below 60 rejected");
 assert.equal(parseInterval("59"), null, "below 60 rejected");
 assert.equal(parseInterval("nonsense"), null, "invalid");
-assert.deepEqual(parseWatchCommand("go watch"), { kind: "start", intervalSeconds: 60 }, "start default");
+assert.deepEqual(parseWatchCommand("go watch"), { kind: "start", intervalSeconds: 60 });
 assert.equal(parseWatchCommand("go watch 30s").invalid, true, "invalid interval");
 assert.deepEqual(parseWatchCommand("go watch stop"), { kind: "stop" });
 assert.equal(parseWatchCommand("go build").kind, "none");
 
 for (const adapter of [ompAdapter, piAdapter]) {
-  // go watch activates and injects an immediate tick (first go before first wait)
-  let r = run(adapter, "go watch");
-  assert.ok(r.api._sent.length >= 1, `${adapter.name}: immediate first go`);
-  assert.ok(r.api._sent[0].msg.content.includes(WATCH_TICK_PROMPT.slice(0, 30)), "tick prompt injected");
-  assert.equal(r.api._intervalMs, 60000, `${adapter.name}: default interval 60s`);
+  const name = adapter.name;
+  const handled = adapter === ompAdapter ? { handled: true } : { action: "handled" };
 
-  // custom interval
-  r = run(adapter, "go watch 5m");
-  assert.equal(r.api._intervalMs, 300000, `${adapter.name}: 5m interval`);
+  // Fields are on the EVENT, not the ctx: put them on ctx only -> no activation.
+  const envOnlyCtx = makeEnv();
+  adapter(envOnlyCtx.api);
+  emit(envOnlyCtx, "session_start", {});
+  const ctxOnlyResult = await emit(envOnlyCtx, "input", {}, { text: "go watch", source: "interactive" }); // event empty, ctx overloaded
+  emit(envOnlyCtx, "session_shutdown", {});
+  // no activation, no wake, not handled
+  // (event is {} so it should not activate)
+  // NB: makeEnv's emit passes (event, ctx); a handler reading event.text gets "".
 
-  // below-60s does not activate
-  r = run(adapter, "go watch 30s");
-  assert.equal(r.api._intervalMs, undefined, `${adapter.name}: <60s not activated`);
+  // interactive event.text="go watch" activates + one immediate wake + consumed.
+  const r = await run(adapter, "go watch");
+  assert.equal(r.env.sent.length, 1, `${name}: exactly one immediate wake`);
+  assert.ok(r.env.sent[0].msg.content.includes(WATCH_TICK_PROMPT.slice(0, 30)), `${name}: tick prompt injected`);
+  assert.deepEqual(r.inputResult, handled, `${name}: recognized command consumed`);
+  const intervalMs = r.env.ctxIntervals[0]?.ms ?? globalThis.__hgIntervals.at(-1)?.ms;
+  assert.equal(intervalMs, 60000, `${name}: default interval 60s`);
 
-  // injected extension wake (source==="extension") is NOT re-activated as a command
-  r = run(adapter, "go watch", (c) => { c.source = "extension"; });
-  assert.equal(r.api._sent.length, 0, `${adapter.name}: no recursion from injected tick`);
+  // custom interval >=60s
+  const r2 = await run(adapter, "go watch 5m");
+  const im2 = r2.env.ctxIntervals[0]?.ms ?? globalThis.__hgIntervals.at(-1)?.ms;
+  assert.equal(im2, 300000, `${name}: 5m interval`);
 
-  // busy agent does not overlap
-  r = run(adapter, "go watch");
-  const before = r.api._sent.length;
-  r.ctx.isIdle = () => false; // busy
-  r.api._intervalFn(r.ctx);   // tick while busy
-  assert.equal(r.api._sent.length, before, `${adapter.name}: busy tick does not overlap`);
+  // below-60s is rejected but consumed (no activation, still handled)
+  const r3 = await run(adapter, "go watch 30s");
+  assert.deepEqual(r3.inputResult, handled, `${name}: invalid interval consumed`);
+  assert.equal(r3.env.sent.length, 0, `${name}: invalid interval does not wake`);
 
-  // stop clears timer (activate then stop in the same instance)
-  const s = makePi();
+  // event.source="extension" is NOT consumed and does NOT reactivate
+  const r4 = await run(adapter, "go watch", "extension");
+  assert.equal(r4.env.sent.length, 0, `${name}: injected wake not re-activated`);
+  assert.equal(r4.inputResult, undefined, `${name}: injected wake continues normally`);
+
+  // fields only on ctx do NOT make the command pass (guard against regression)
+  assert.equal(envOnlyCtx.sent.length, 0, `${name}: ctx-only fields do not activate`);
+  assert.equal(ctxOnlyResult, undefined, `${name}: ctx-only fields not handled`);
+
+  const b = await run(adapter, "go watch", "interactive", { shutdown: false });
+  const tickFn = b.env.ctxIntervals[0]?.fn ?? globalThis.__hgIntervals.at(-1)?.fn;
+  b.env.ctx.isIdle = () => false;
+  tickFn(); // fire tick while busy
+  assert.equal(b.env.sent.length, 1, `${name}: busy tick does not overlap`);
+
+  // stop consumes and clears the timer
+  const s = makeEnv();
   adapter(s.api);
-  s.api._emit("session_start", s.ctx);
-  s.ctx.text = "go watch";
-  s.api._emit("input", s.ctx);
-  const clearedBefore = s.api._cleared.length;
-  s.ctx.text = "go watch stop";
-  s.api._emit("input", s.ctx);
-  assert.ok(s.api._cleared.length > clearedBefore, `${adapter.name}: stop clears timer`);
-  // stop also clears via session_shutdown
-  const t = makePi();
-  adapter(t.api);
-  t.api._emit("session_start", t.ctx);
-  t.ctx.text = "go watch";
-  t.api._emit("input", t.ctx);
-  const cb2 = t.api._cleared.length;
-  t.api._emit("session_shutdown", t.ctx);
-  assert.ok(t.api._cleared.length > cb2, `${adapter.name}: session_shutdown clears timer`);
+  emit(s, "session_start", {});
+  emit(s, "input", { text: "go watch", source: "interactive" });
+  const clearedBefore = s.ctxCleared.length + globalThis.__hgCleared.length;
+  const stopResult = await emit(s, "input", { text: "go watch stop", source: "interactive" });
+  emit(s, "session_shutdown", {});
+  assert.deepEqual(stopResult, handled, `${name}: stop consumed`);
+  assert.ok(s.ctxCleared.length + globalThis.__hgCleared.length > clearedBefore, `${name}: stop clears timer`);
 }
+
+// restore timers
+globalThis.setInterval = realSetInterval;
+globalThis.clearInterval = realClearInterval;
 
 console.log("watch conformance: PASS");

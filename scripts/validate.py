@@ -100,13 +100,19 @@ REQUIRED_TEXT = {
         "parseWatchCommand",
         "WATCH_TICK_PROMPT",
     ),
+    Path(".github/workflows/validate.yml"): (
+        "branches: [main]",
+        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    ),
     SKILL_ROOT / "adapters/omp.mjs": (
         'deliverAs: "followUp"',
-        'source === "extension"',
+        "event.source === \"extension\"",
+        "return { handled: true }",
     ),
     SKILL_ROOT / "adapters/pi.mjs": (
         'deliverAs: "followUp"',
-        'source === "extension"',
+        "event.source === \"extension\"",
+        'action: "handled"',
     ),
     SKILL_ROOT / "references/watch.md": (
         "go watch",

@@ -67,6 +67,22 @@ it is a capability result, not a failed Work Order.
 ## Normalizing
 
 Harnesses do not share identical internals. They share compatible user
-semantics. `$handoff-go setup` installs only the assets that are genuinely
-required (the OMP and Pi extension glue and the shared core) and remains
-harness-neutral: it does not install or configure any coding-agent binary.
+semantics. `$handoff-go setup` is harness-neutral: it writes only the managed
+`AGENTS.md` bootstrap block and does not install or configure any coding-agent
+binary or adapter file.
+
+### Enabling watch in a harness
+
+The adapter files ship in the skill package (`adapters/omp.mjs`,
+`adapters/pi.mjs`). OMP and Pi auto-discover project extensions only in
+`.omp/extensions/` / `.pi/extensions/`, so enabling watch is a one-time native
+load step:
+
+```sh
+mkdir -p .omp/extensions && cp <skill>/adapters/omp.mjs .omp/extensions/handoff-go-watch.mjs
+mkdir -p .pi/extensions && cp <skill>/adapters/pi.mjs .pi/extensions/handoff-go-watch.mjs
+```
+
+where `<skill>` is the installed Handoff Go skill package path. No other harness
+needs an adapter copy: Claude Code, OpenCode, DeepSeek Harness, and Codex are
+driven by skill instructions and their native capability (see the table above).
