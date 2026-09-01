@@ -18,6 +18,12 @@ Commands actually run and observed results:
 
 ```
 
+## Security Gate
+
+`SECURITY_PREFLIGHT: PASS` / `SECURITY_PREFLIGHT: BLOCKED`
+
+Summarize the evidence relevant to the security and authority boundary. Do not include sensitive values.
+
 ## Source / semantic evidence
 
 ## Scope deviations
