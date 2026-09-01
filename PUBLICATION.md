@@ -36,6 +36,7 @@ Everything below must pass **before** the repository's visibility changes.
 
 After the Owner authorizes making the repository public:
 
+- [ ] Repository visibility changed to public.
 - [ ] Repository renamed to `ee-/handoff-go` if not already done.
 - [ ] Branch protection / ruleset or equivalent available protection configured.
 - [ ] GitHub private vulnerability reporting enabled where available.
@@ -49,10 +50,10 @@ released.
 
 Only after every Phase B check passes:
 
+- [ ] Owner explicitly authorizes the `v1.0.0` release/publication.
 - [ ] `v1.0.0` tag created.
 - [ ] GitHub Release prepared and published.
 - [ ] Released install path verified.
-- [ ] Owner release authorization recorded.
 
 Changing visibility or publishing the release is outside the current Work Order.
 
