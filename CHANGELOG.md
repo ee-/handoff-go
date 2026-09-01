@@ -6,10 +6,15 @@ Coder Event Watch (repository-level wake), OpenAI Codex reference:
 
 - `.github/workflows/handoff-go-coder-event-watch.yml` using the official
   `openai/codex-action` (pinned by full commit SHA); one GitHub durable-state
-  event → one fresh Coder `go` → exit; never runs `go watch`;
-- wake-aftering events, actor permission admission before any model call,
-  GitHub-native concurrency, trusted-default checkout, finite timeout, standard
-  `GITHUB_TOKEN`;
+  event → one fresh bounded Coder `go` → persist → exit; never runs `go watch`;
+- two-job authority split: `coder-reason` (Codex, no GitHub write credential,
+  read-only, `persist-credentials: false`) produces a bounded result
+  (`NO_WORK`/`PROPOSAL`/`ESCALATION`) plus a workspace patch; `coder-persist`
+  (no model key, narrow write permissions) validates and applies it;
+- native Codex Action write-access admission (via `${{ github.token }}`), no
+  separate shell gate; bounded artifact handoff between jobs;
+- wake-aftering events, GitHub-native concurrency, trusted-default checkout,
+  finite timeout, standard `GITHUB_TOKEN`;
 - canonical wake-only Codex prompt (`.github/codex/handoff-go-coder-event-watch-prompt.md`);
 - explicit opt-in: a repository owner enables it; setup does not;
 - Codex Event Watch `REFERENCE`; Claude Code / OpenCode documented `EVENT_READY`;

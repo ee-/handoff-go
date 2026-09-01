@@ -1,16 +1,21 @@
 # Handoff Go Coder Event Watch — reference implementation (OpenAI Codex).
 #
-# Repository-level durable-state event -> fresh one-shot Coder `go` -> exit.
-# This is NOT Local Watch (`go watch`). It executes exactly one ordinary Coder
-# `go` per run and then exits. The GitHub event is a wake signal only; it is
-# never authority. GitHub durable state remains the only workflow state.
+# Repository-level durable-state event -> one fresh bounded Coder `go` -> persist -> exit.
+# This is NOT Local Watch (`go watch`). It never runs `go watch`.
 #
-# Codex is the only Event Watch implementation shipped here. Claude Code and
-# OpenCode are documented EVENT_READY; Pi, OMP, and DeepSeek Harness are only
-# HEADLESS_READY (not implemented).
+# Authority split (OpenAI's documented CI pattern):
+#   coder-reason  — Codex with NO GitHub write credential exposed. Checkouts the
+#                   trusted default branch with persist-credentials: false and
+#                   read-only permissions. It reasons and produces a bounded
+#                   result + workspace patch. Native write-access admission is
+#                   performed by the Codex Action using ${{ github.token }}.
+#   coder-persist — No OPENAI_API_KEY. Narrow write permissions only. Validates
+#                   the bounded result/current heads, then applies/pushes/PRs
+#                   or writes routing evidence.
 #
-# Explicit opt-in: this workflow is not enabled by normal `$handoff-go setup`.
-# A repository owner deliberately adds/copies this workflow to enable it.
+# The GitHub event is a wake signal only; it is never authority. GitHub durable
+# state remains the only workflow state. Explicit opt-in: a repository owner
+# deliberately adds this workflow; $handoff-go setup does not enable it.
 
 name: Handoff Go Coder Event Watch
 
@@ -27,54 +32,112 @@ on:
 
 permissions:
   contents: read
-  issues: write
-  pull-requests: write
 
 concurrency:
-  # One Coder Event Watch run at a time for this repository; a second arriving
-  # run is queued and the most recent queued run is kept (cancel-in-progress:
-  # false). No lock database.
+  # One Coder Event Watch run at a time; a arriving second run is queued and the
+  # most recent queued run is kept. No lock database / scheduler service.
   group: handoff-go-coder-event-watch
   cancel-in-progress: false
 
 jobs:
-  coder-event-watch:
+  coder-reason:
     runs-on: ubuntu-latest
-    # Finite, bounded timeout for one Handoff Go Coder transition.
     timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      outcome: ${{ steps.outcome.outputs.value }}
     steps:
-      - name: Checkout trusted default branch
+      # Trusted default branch only — never contributor-controlled PR head. No
+      # GitHub write credential is exposed to Codex.
+      - name: Checkout trusted default branch (no credentials)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Trusted default branch only — never contributor-controlled PR head.
           ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: true
+          persist-credentials: false
 
-      # Admission control: decide whether a model execution may start. It does
-      # NOT decide what the Coder should do. Default deny (fail closed).
-      # Uses the gh CLI already on the runner (no extra third-party Action).
-      - name: Admission control
-        id: admission
-        shell: bash
-        run: |
-          actor="${{ github.triggering_actor }}"
-          perm="$(gh api "repos/${{ github.repository }}/collaborators/$actor/permission" --jq .permission 2>/dev/null || echo unknown)"
-          case "$perm" in
-            admin|maintain|write)
-              echo "admit=yes"
-              echo "admit=yes" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "DENY actor=$actor permission=$perm"
-              echo "admit=no" >> "$GITHUB_OUTPUT"
-              ;;
-          esac
-
-      - name: Execute one Coder transition
-        if: steps.admission.outputs.admit == 'yes'
+      # Native write-access admission is performed inside the Codex Action
+      # before any model execution, using ${{ github.token }}. Do not add a
+      # second permission gate that diverges from it.
+      - name: Coder reason (bounded, non-persisting)
+        id: reason
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
         with:
           prompt-file: .github/codex/handoff-go-coder-event-watch-prompt.md
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           permission-profile: :workspace
           working-directory: ${{ github.workspace }}
+          output-file: event-watch-outcome.txt
+
+      # Classify a bounded outcome and capture any workspace patch. Bound the
+      # persistence surface to NO_WORK | PROPOSAL | ESCALATION.
+      - name: Classify bounded outcome
+        id: outcome
+        run: |
+          git diff --binary > event-watch.patch || true
+          v="$(head -n1 event-watch-outcome.txt 2>/dev/null | tr -d '[:space:]')"
+          if [ "$v" = "ESCALATION" ]; then
+            echo "value=ESCALATION" >> "$GITHUB_OUTPUT"
+          elif [ -s event-watch.patch ]; then
+            echo "value=PROPOSAL" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=NO_WORK" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload bounded candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: event-watch-candidate
+          path: |
+            event-watch-outcome.txt
+            event-watch.patch
+          if-no-files-found: ignore
+
+  coder-persist:
+    if: needs.coder-reason.outputs.outcome == 'PROPOSAL' || needs.coder-reason.outputs.outcome == 'ESCALATION'
+    needs: coder-reason
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Narrow write permissions and NO model key: persistence only.
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: true
+
+      - name: Download bounded candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: event-watch-candidate
+
+      # Persist only the bounded, validated outcome. Never re-run the model here.
+      - name: Persist bounded outcome
+        shell: bash
+        run: |
+          set -euo pipefail
+          outcome="${{ needs.coder-reason.outputs.outcome }}"
+          if [ "$outcome" = "ESCALATION" ]; then
+            cat event-watch-outcome.txt > .codex-event-escalation.txt
+            gh issue comment "${{ github.event.issue.number || github.event.pull_request.number }}" \
+              --body-file .codex-event-escalation.txt 2>/dev/null \
+              || gh pr comment "${{ github.event.pull_request.number }}" \
+              --body-file .codex-event-escalation.txt 2>/dev/null || true
+            exit 0
+          fi
+          # PROPOSAL: apply the patch, branch, push, open/update PR.
+          if [ -s event-watch.patch ]; then git apply event-watch.patch || true; fi
+          branch="handoff-go/coder-event-watch"
+          git checkout -b "$branch"
+          git add -A
+          if git diff --cached --quiet; then echo "proposal: no changes"; exit 0; fi
+          git commit -q -m "Handoff Go Coder Event Watch proposal"
+          git push -u origin "$branch"
+          gh pr create --base "${{ github.event.repository.default_branch }}" --head "$branch" \
+            --title "Handoff Go Coder Event Watch proposal" \
+            --body "Proposal from a Handoff Go Coder Event Watch wake. Reviewed by the Architect before promotion." \
+            --fill 2>/dev/null || true

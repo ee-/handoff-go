@@ -214,6 +214,9 @@ def main() -> None:
           "Coder workflow contains self-routing")
     check("Next Actor: ARCHITECT" not in read(SKILL_ROOT / "references/architect.md"),
           "Architect workflow contains self-routing")
+    check("Next Actor: OWNER" not in protocol,
+          "protocol routes to Owner as an executable role")
+
     # --- Event Watch (v1.2) reference checks ---
     ew = Path(".github/workflows/handoff-go-coder-event-watch.yml")
     check(ew.is_file(), "Event Watch workflow missing")
@@ -222,10 +225,28 @@ def main() -> None:
     check("timeout-minutes:" in ew_text, "Event Watch must set a finite timeout")
     check("pull_request_target" not in ew_text, "Event Watch must not use pull_request_target")
     check("openai/codex-action@" in ew_text, "Event Watch must invoke the Codex GitHub Action")
-    ew_lines = ew_text.splitlines()
-    adm = next((i for i, l in enumerate(ew_lines) if "Admission control" in l), -1)
-    cdx = next((i for i, l in enumerate(ew_lines) if "openai/codex-action" in l), -1)
-    check(adm >= 0 and cdx > adm, "Event Watch: admission must precede Codex invocation")
+    # Native write-access admission is done by the Codex Action (via github.token).
+    # There must be no divergent gh-permission shell gate.
+    check("collaborators/" not in ew_text,
+          "Event Watch must rely on the Codex Action native admission")
+    # Two-job authority split: reason (no write cred) -> persist (write).
+    check("persist-credentials: false" in ew_text,
+          "Event Watch reason checkout must not persist GitHub credentials")
+    check("coder-reason" in ew_text and "coder-persist" in ew_text,
+          "Event Watch must split reason (no write cred) from persist (write)")
+    check("output-file:" in ew_text,
+          "Event Watch reason job must capture a bounded result")
+    check("actions/upload-artifact@" in ew_text and "actions/download-artifact@" in ew_text,
+          "Event Watch must hand the bounded result via pinned artifacts")
+    reason_part = ew_text.split("coder-persist:")[0]
+    persist_part = ew_text.split("coder-persist:")[1] if "coder-persist:" in ew_text else ""
+    check("openai-api-key:" in reason_part, "Event Watch reason job must run Codex with the model key")
+    check("issues: write" not in reason_part and "pull-requests: write" not in reason_part,
+          "Event Watch reason job must not hold GitHub write permissions")
+    check("issues: write" in persist_part and "pull-requests: write" in persist_part,
+          "Event Watch persist job must hold write permissions")
+    check("openai-api-key:" not in persist_part,
+          "Event Watch persist job must not hold the model key")
 
     # All third-party Actions across workflows must be pinned to a full commit SHA.
     for wf in (ROOT / ".github/workflows").glob("*.yml"):

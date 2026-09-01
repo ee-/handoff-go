@@ -84,8 +84,14 @@ exits. The event payload is a wake signal only, never authority.
   (created/edited), `pull_request_review` (submitted),
   `pull_request_review_comment` (created), `workflow_dispatch`. No `push` /
   `pull_request` (those are primarily Architect wake signals).
-- **Admission:** actor permission (`admin`/`maintain`/`write`) checked via the
-  runner's `gh` CLI before any model call; unknown/denied never spends tokens.
+- **Admission:** native. The Codex Action performs write-access admission before
+  any model execution using `${{ github.token }}`; unauthorized actors never
+  spend model tokens. No separate shell gate.
+- **Authority split:** a `coder-reason` job runs Codex with no GitHub write
+  credential exposed (`persist-credentials: false`, read-only) and produces a
+  bounded result (`NO_WORK` | `PROPOSAL` | `ESCALATION`) plus a workspace patch;
+  a `coder-persist` job (no model key, narrow write permissions) validates and
+  applies the bounded result — push/PR or routing evidence.
 - **Concurrency:** GitHub-native `concurrency` group
   (`handoff-go-coder-event-watch`); no lock database or scheduler service.
 - **Trusted checkout** of the repository default branch; no `pull_request_target`.
