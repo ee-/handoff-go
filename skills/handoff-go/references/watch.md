@@ -51,18 +51,49 @@ most one pending wake; it never queues one wake per missed interval.
 
 ## Harness compatibility
 
-| Harness | Adapter mechanism | Default cadence | Native limitations | Validation level |
-|---|---|---|---|---|
-| OMP / Oh My Pi | `.omp/extensions/` extension (managed timer + followUp) | 1m | managed timers cleared on `session_shutdown` | LIFECYCLE |
-| Pi coding agent | `.pi/extensions/` extension (lifecycle + followUp) | 1m | resources cleaned on `session_shutdown` | source/type-grounded |
-| Claude Code | native session scheduler (`CronCreate` / `/loop`) | 1m (as requested) | min 1m interval; recurring task expires after 7 days; jitter; due prompt waits for the active turn | source/doc-grounded |
-| OpenCode | native plugin + session `prompt_async` | 1m | session-scoped; busy sessions coalesce | source/doc-grounded |
-| DeepSeek Harness | native Cordis timer + `agent.followup` | 1m | `dsh-schedule` `every_seconds` floor is 300s (do not use for 1m) | source/doc-grounded |
-| OpenAI Codex | hooks (`UserPromptSubmit`/`Stop`) | — | background hooks cannot start a turn; `Stop` continuation is interactive and requires empirical validation | WATCH_UNSUPPORTED |
+`Local Watch` is the v1.1 session/runtime `go watch`. `Event Watch` is the
+repository-level durable-state wake (v1.2): one GitHub event → one fresh Coder
+`go` → exit. It never invokes `go watch`.
 
-`WATCH_UNSUPPORTED` for Codex means autonomous session wake-up is not safely
-expressible through the documented runtime without live interactive validation;
-it is a capability result, not a failed Work Order.
+| Harness | Local Watch | Event Watch | Mechanism |
+|---|---|---|---|
+| OMP / Oh My Pi | supported (LIFECYCLE) | HEADLESS_READY, not implemented | `.omp/extensions/` extension |
+| Pi coding agent | supported (LIFECYCLE) | HEADLESS_READY, not implemented | `.pi/extensions/` extension |
+| Claude Code | — | EVENT_READY (official GitHub Action) | native session scheduler / official integration |
+| OpenCode | — | EVENT_READY (official GitHub integration) | native plugin + session `prompt_async` |
+| DeepSeek Harness | — | HEADLESS_READY, not implemented | native Cordis timer + `agent.followup` |
+| OpenAI Codex | unsupported | **REFERENCE** — supported via official Codex GitHub Action | repository-level GitHub Actions workflow |
+
+`Local Watch` on Codex remains `WATCH_UNSUPPORTED` (a background hook cannot
+start a turn; `Stop` continuation needs interactive empirical validation).
+Event Watch is the Codex path. Claude Code and OpenCode are documented
+EVENT_READY but not shipped; Pi, OMP, and DeepSeek Harness are only
+HEADLESS_READY (not implemented).
+
+## Event Watch (v1.2)
+
+Repository-level counterpart to Local Watch. A durable GitHub state event wakes
+one fresh Coder `go` execution that rediscover the durable workflow state and
+exits. The event payload is a wake signal only, never authority.
+
+- **Reference implementation: OpenAI Codex.** Shipped as
+  `.github/workflows/handoff-go-coder-event-watch.yml` using the official
+  `openai/codex-action` pinned by full commit SHA. Runs ordinary `go`, not
+  `go watch`.
+- **Wake-aftering:** `issues` (opened/edited/reopened), `issue_comment`
+  (created/edited), `pull_request_review` (submitted),
+  `pull_request_review_comment` (created), `workflow_dispatch`. No `push` /
+  `pull_request` (those are primarily Architect wake signals).
+- **Admission:** actor permission (`admin`/`maintain`/`write`) checked via the
+  runner's `gh` CLI before any model call; unknown/denied never spends tokens.
+- **Concurrency:** GitHub-native `concurrency` group
+  (`handoff-go-coder-event-watch`); no lock database or scheduler service.
+- **Trusted checkout** of the repository default branch; no `pull_request_target`.
+- **Finite timeout**, standard `GITHUB_TOKEN`, canonical wake-only prompt.
+- **Explicit opt-in:** a repository owner deliberately adds the workflow. Normal
+  `$handoff-go setup` does not enable Event Watch.
+- No webhook server, dispatcher daemon, state DB, cross-project context, or
+  generic harness framework.
 
 ## Normalizing
 

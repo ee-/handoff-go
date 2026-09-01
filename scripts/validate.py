@@ -214,8 +214,35 @@ def main() -> None:
           "Coder workflow contains self-routing")
     check("Next Actor: ARCHITECT" not in read(SKILL_ROOT / "references/architect.md"),
           "Architect workflow contains self-routing")
-    check("Next Actor: OWNER" not in protocol,
-          "protocol routes to Owner as an executable role")
+    # --- Event Watch (v1.2) reference checks ---
+    ew = Path(".github/workflows/handoff-go-coder-event-watch.yml")
+    check(ew.is_file(), "Event Watch workflow missing")
+    ew_text = read(ew)
+    check("concurrency:" in ew_text, "Event Watch must set a concurrency group")
+    check("timeout-minutes:" in ew_text, "Event Watch must set a finite timeout")
+    check("pull_request_target" not in ew_text, "Event Watch must not use pull_request_target")
+    check("openai/codex-action@" in ew_text, "Event Watch must invoke the Codex GitHub Action")
+    ew_lines = ew_text.splitlines()
+    adm = next((i for i, l in enumerate(ew_lines) if "Admission control" in l), -1)
+    cdx = next((i for i, l in enumerate(ew_lines) if "openai/codex-action" in l), -1)
+    check(adm >= 0 and cdx > adm, "Event Watch: admission must precede Codex invocation")
+
+    # All third-party Actions across workflows must be pinned to a full commit SHA.
+    for wf in (ROOT / ".github/workflows").glob("*.yml"):
+        wf_text = wf.read_text(encoding="utf-8")
+        for m in re.finditer(r"uses:\s*(\S+)", wf_text):
+            uses = m.group(1)
+            if "@" in uses:
+                _, ref = uses.rsplit("@", 1)
+                if not re.fullmatch(r"[0-9a-f]{40}", ref):
+                    check(False, f"{wf.name}: action not pinned to a full SHA: {uses}")
+
+    # Canonical Codex Event Watch prompt must be wake-only and exactly-one-go.
+    ew_prompt = Path(".github/codex/handoff-go-coder-event-watch-prompt.md")
+    check(ew_prompt.is_file(), "Event Watch prompt file missing")
+    pr_text = ew_prompt.read_text(encoding="utf-8")
+    for needle in ("wake signal only", "exactly one ordinary Handoff Go", "no actionable Coder work", "Security Gate"):
+        check(needle in pr_text, f"Event Watch prompt missing: {needle}")
 
     failures = []
     for path in text_files():

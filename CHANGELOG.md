@@ -1,3 +1,21 @@
+# Changelog
+
+## 1.2.0 — pending
+
+Coder Event Watch (repository-level wake), OpenAI Codex reference:
+
+- `.github/workflows/handoff-go-coder-event-watch.yml` using the official
+  `openai/codex-action` (pinned by full commit SHA); one GitHub durable-state
+  event → one fresh Coder `go` → exit; never runs `go watch`;
+- wake-aftering events, actor permission admission before any model call,
+  GitHub-native concurrency, trusted-default checkout, finite timeout, standard
+  `GITHUB_TOKEN`;
+- canonical wake-only Codex prompt (`.github/codex/handoff-go-coder-event-watch-prompt.md`);
+- explicit opt-in: a repository owner enables it; setup does not;
+- Codex Event Watch `REFERENCE`; Claude Code / OpenCode documented `EVENT_READY`;
+  Pi / OMP / DeepSeek Harness only `HEADLESS_READY` (not implemented);
+- Local `go watch` behavior unchanged.
+
 ## 1.1.0 — pending
 
 Coder watch (`go watch`):

@@ -1,0 +1,80 @@
+# Handoff Go Coder Event Watch — reference implementation (OpenAI Codex).
+#
+# Repository-level durable-state event -> fresh one-shot Coder `go` -> exit.
+# This is NOT Local Watch (`go watch`). It executes exactly one ordinary Coder
+# `go` per run and then exits. The GitHub event is a wake signal only; it is
+# never authority. GitHub durable state remains the only workflow state.
+#
+# Codex is the only Event Watch implementation shipped here. Claude Code and
+# OpenCode are documented EVENT_READY; Pi, OMP, and DeepSeek Harness are only
+# HEADLESS_READY (not implemented).
+#
+# Explicit opt-in: this workflow is not enabled by normal `$handoff-go setup`.
+# A repository owner deliberately adds/copies this workflow to enable it.
+
+name: Handoff Go Coder Event Watch
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+  issue_comment:
+    types: [created, edited]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  # One Coder Event Watch run at a time for this repository; a second arriving
+  # run is queued and the most recent queued run is kept (cancel-in-progress:
+  # false). No lock database.
+  group: handoff-go-coder-event-watch
+  cancel-in-progress: false
+
+jobs:
+  coder-event-watch:
+    runs-on: ubuntu-latest
+    # Finite, bounded timeout for one Handoff Go Coder transition.
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Trusted default branch only — never contributor-controlled PR head.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: true
+
+      # Admission control: decide whether a model execution may start. It does
+      # NOT decide what the Coder should do. Default deny (fail closed).
+      # Uses the gh CLI already on the runner (no extra third-party Action).
+      - name: Admission control
+        id: admission
+        shell: bash
+        run: |
+          actor="${{ github.triggering_actor }}"
+          perm="$(gh api "repos/${{ github.repository }}/collaborators/$actor/permission" --jq .permission 2>/dev/null || echo unknown)"
+          case "$perm" in
+            admin|maintain|write)
+              echo "admit=yes"
+              echo "admit=yes" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "DENY actor=$actor permission=$perm"
+              echo "admit=no" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Execute one Coder transition
+        if: steps.admission.outputs.admit == 'yes'
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
+        with:
+          prompt-file: .github/codex/handoff-go-coder-event-watch-prompt.md
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: :workspace
+          working-directory: ${{ github.workspace }}
