@@ -1,6 +1,6 @@
 ---
-name: Work Order
-about: Durable Architect → Coder execution contract
+name: Handoff Go Work Order
+about: Durable Architect-to-Coder execution contract
 title: ""
 labels: []
 assignees: []
@@ -22,8 +22,6 @@ assignees: []
 
 # Security / Authority Envelope
 
-State any task-specific authority or security constraints that differ from the project's normal trusted governance. The Security Gate in `SPEC.md` remains mandatory.
-
 # Implementation Guidance
 
 # Acceptance Criteria
@@ -32,13 +30,15 @@ State any task-specific authority or security constraints that differ from the p
 
 # Required Evidence
 
-Include the Security Gate result defined by `SPEC.md`.
+Include the Security Gate result defined by
+`skills/handoff-go/references/coder.md`.
 
 # Escalation Conditions
 
 # Completion Protocol
 
-Open/update a PR with the Architect Coder Handoff Evidence Packet when this Work Order is complete. Use `Closes #<issue>` only if merge truly completes this contract.
+Open or update a PR Evidence Packet. Use `Closes #<issue>` only when merge truly
+completes this contract.
 
 # Routing
 

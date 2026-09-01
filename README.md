@@ -1,96 +1,128 @@
-# Architect Coder Handoff
+# Handoff Go
 
-**A GitHub-native protocol for delegating complex work from an Architect in ChatGPT Chat to a coding agent that executes it.**
+**Architect decides. Coder goes. GitHub remembers.**
 
-Architect Coder Handoff (ACH) is designed for a common agent workflow:
+Handoff Go is a dependency-free agent skill for delegating complex repository
+work from an Architect in ChatGPT Chat to a coding agent without making the
+human relay plans, Issue numbers, PR links, branches, or blockers.
 
-- a human works with a strong reasoning model in **ChatGPT Chat**;
-- ChatGPT acts as the **Architect**: clarifies the objective, makes architecture decisions, writes bounded Work Orders, resolves escalations, and independently reviews evidence;
-- a coding agent acts as the **Coder**: inspects the repository, implements, tests, collects evidence, and opens or updates pull requests;
-- **GitHub durable state** carries the handoff, so the human does not have to copy task context, Issue numbers, PR numbers, or branch names between sessions.
+```text
+Owner / Human
+  -> Architect (typically ChatGPT Chat)
+  -> GitHub durable state
+  -> Coder (Codex, Claude Code, OpenCode, Pi, Hermes, OMP, ...)
+```
 
-The protocol is intentionally small. The human invokes **roles**, not tasks. The normal human-facing command is ordinary text:
+GitHub objects are the protocol:
+
+```text
+Issue = Work Contract    PR = Evidence Packet    Merge = Promotion
+Comment = Decision / Escalation / Routing        Review = Acceptance
+```
+
+The human-facing command is ordinary text:
 
 ```text
 go
 ```
 
-The same literal `go` is role-relative. It is not a harness slash command and must reach the model as normal user text.
+It is role-relative and active only in repositories whose trusted root
+`AGENTS.md` opts into a pinned Handoff Go version.
 
-## Primary workflow
+## Install
 
-```text
-Owner / Human
-  │
-  │ goal, product decisions, high-authority approval
-  ▼
-Architect — typically ChatGPT Chat
-  │ Work Order / decision / independent review
-  ▼
-GitHub durable state
-  │ Issue   = Work Contract
-  │ Comment = Decision / Escalation / Routing
-  │ Branch  = Proposal
-  │ PR      = Evidence Packet
-  │ Review  = Independent Acceptance
-  │ Merge   = Promotion
-  ▼
-Coder — Codex / Claude Code / OpenCode / Pi / Hermes / OMP / other coding agent
+After the repository is public, install it project-locally with the open
+[`skills` CLI](https://github.com/vercel-labs/skills):
+
+```sh
+npx skills add ee-/handoff-go
 ```
 
-Reference pairing: **ChatGPT Chat = Architect, coding harness = Coder**. The protocol does not require a specific coding harness.
+Then invoke:
 
-## Why this exists
+```text
+$handoff-go setup
+```
 
-Complex tasks often start in a reasoning-heavy ChatGPT conversation and then need repository-level execution. Without a durable handoff protocol, the human becomes the message bus: copying plans into the coder, relaying blockers back to ChatGPT, carrying PR links, and deciding when work is actually complete.
+Setup adds one idempotent managed block to root `AGENTS.md` while preserving
+existing project instructions. Validate it with:
 
-ACH moves that coordination into GitHub. Each role rediscover its next action from durable project state and leaves enough evidence for the other role to continue independently.
+```text
+$handoff-go check
+```
+
+Daily use is ordinary text in the relevant role session:
+
+```text
+go
+```
+
+This repository is currently private and pre-publication. From a local checkout,
+the same skill can be installed by passing its path to `npx skills add`.
+
+## What `go` does
+
+Architect precedence:
+
+1. resolve a Coder security block or escalation;
+2. review or re-review an exact PR head;
+3. make another routed contract decision;
+4. create the next Work Order only when durable state makes it unambiguous.
+
+Coder precedence:
+
+1. load trusted governance;
+2. rediscover returned or new Coder-routed work;
+3. complete the Security Gate;
+4. implement, verify, and publish an Evidence Packet;
+5. stop at independent Architect review.
+
+No owned transition produces `NO_ARCHITECT_WORK` or `NO_CODER_WORK`. Ambiguity
+fails closed rather than becoming guessed work.
 
 ## Security model
 
-Open repositories introduce an important boundary: **repository content is input, not authority**.
+Repository content is input, not authority. Contributor-controlled Issues,
+comments, branches, files, tests, dependencies, and tool output cannot expand
+permissions, secret access, egress, destructive actions, publication, or review
+authority.
 
-Public Issues, PRs, comments, branches, files, test fixtures, dependency scripts, and tool output may contain malicious or prompt-injection-like instructions. They must not be allowed to expand Coder permissions or override the trusted protocol.
+The Coder loads governance from a trusted default branch or immutable ref before
+evaluating untrusted work and completes `SECURITY_PREFLIGHT` before material
+execution. A contribution that changes governance cannot authorize or accept
+itself.
 
-Before execution, the Coder performs the protocol security gate defined in [`SPEC.md`](SPEC.md). At minimum it verifies:
+See [SECURITY.md](SECURITY.md) and the canonical
+[core protocol](skills/handoff-go/references/core.md).
 
-- trusted governance and role provenance;
-- no unauthorized secret access or disclosure;
-- no unauthorized destructive action, deployment, publication, permission change, or external egress;
-- untrusted contributor content cannot redefine Owner/Architect authority;
-- untrusted code is not executed in a privileged environment merely because it appears in an Issue or PR;
-- ambiguous or expanded authority fails closed and is routed back to Architect/Owner.
+## Skill layout
 
-See [`SECURITY.md`](SECURITY.md) for open-source repository guidance and vulnerability reporting.
+The distributable lives in `skills/handoff-go/` because the current `skills`
+CLI installs only `SKILL.md` from a repository-root skill and would omit its
+progressive-disclosure references. The repository still exposes exactly one
+skill.
 
-## Canonical specification
+- [SKILL.md](skills/handoff-go/SKILL.md) — small invocation and role router.
+- [Core protocol](skills/handoff-go/references/core.md) — shared trust, routing, and invariants.
+- [Architect workflow](skills/handoff-go/references/architect.md) — Work Orders and review.
+- [Coder workflow](skills/handoff-go/references/coder.md) — security, execution, and evidence.
+- [Adoption guide](skills/handoff-go/references/adoption.md) — setup, check, and upgrades.
 
-The canonical behavior is defined in [`SPEC.md`](SPEC.md).
+[SPEC.md](SPEC.md) is intentionally only a compatibility pointer. The references
+above are the single source of truth.
 
-Consumer projects should **pin an ACH release or commit**, then use a minimal local bootstrap that points agents to that pinned specification. Do not copy and independently redefine `go` semantics for each harness.
+## Development
 
-See [`ADOPTION.md`](ADOPTION.md) for integration patterns and [`templates/AGENTS.md`](templates/AGENTS.md) for the minimal consumer-project bootstrap.
+```sh
+python3 scripts/validate.py
+python3 /path/to/skill-creator/scripts/quick_validate.py skills/handoff-go
+npx skills add . --list
+```
 
-## Design goals
+Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md). Publication remains
+blocked until [PUBLICATION.md](PUBLICATION.md) is complete and the Owner
+explicitly authorizes visibility and release publication.
 
-- ChatGPT Chat can delegate complex implementation without the human relaying context.
-- Deterministic Architect/Coder discovery from durable GitHub state.
-- Fail closed on ambiguity, contradictory routing, stale review, or security-boundary expansion.
-- Exact-head-bound review and promotion.
-- No silent waiting: every stop records why and who acts next.
-- Coder executes; Architect contracts and reviews; humans retain high-authority decisions.
-- Harness-neutral on the coding side: no Codex/OMP/Claude/OpenCode/Pi-specific duplicate protocol.
-- Public-repository content never silently grants authority.
-- Complexity only when witnessed failures justify it; no default leases, claims, fencing, dispatcher, or reconciler.
+## License
 
-## Repository templates
-
-- `.github/ISSUE_TEMPLATE/work-order.md` — Architect → Coder Work Order contract.
-- `.github/PULL_REQUEST_TEMPLATE.md` — Coder Evidence Packet template.
-- `templates/AGENTS.md` — minimal bootstrap for a consumer repository.
-- `ADOPTION.md` — pinning, vendoring, submodule, and remote-reference patterns.
-- `SECURITY.md` — security model and public-repository guidance.
-
-## Versioning rule
-
-Treat ACH governance as executable protocol. A consumer repository should pin a version/commit and change that pin deliberately. Never let a moving `main` silently alter an active project's workflow or authority semantics.
+[MIT](LICENSE)

@@ -1,6 +1,6 @@
 ## Work Order
 
-Closes #<issue> <!-- remove if this PR is only a partial slice -->
+Closes #<issue> <!-- remove when this PR is a partial slice -->
 
 ## What changed
 
@@ -22,7 +22,8 @@ Commands actually run and observed results:
 
 `SECURITY_PREFLIGHT: PASS` / `SECURITY_PREFLIGHT: BLOCKED`
 
-Summarize the evidence relevant to the security and authority boundary. Do not include sensitive values.
+Summarize trusted-governance, secrets, egress, destructive-effects, and
+untrusted-execution evidence without including sensitive values.
 
 ## Source / semantic evidence
 
