@@ -47,9 +47,9 @@ Changing visibility or publishing the release is outside the current Work Order.
 - The bundled skill validator, repository validator, whitespace check, and
   official `skills` CLI discovery passed. A temporary project-local install
   contained exactly `SKILL.md`, `agents/openai.yaml`, and the four references.
-- The repository validator exercises setup preservation/idempotency, unopted
-  `go`, role rediscovery, untrusted governance, preflight ordering, stale-head
-  rejection, and contradictory-routing failure markers.
+- The repository validator checks the required markers for setup preservation,
+  unopted `go`, role rediscovery, untrusted governance, preflight ordering,
+  stale-head rejection, and contradictory-routing failure.
 - The repository is private on `main`. GitHub currently returns HTTP 403 for
   branch protection on this private repository under the present account plan;
   required review/check protection therefore remains a publication gate.

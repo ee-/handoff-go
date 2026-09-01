@@ -60,37 +60,15 @@ go
 This repository is currently private and pre-publication. From a local checkout,
 the same skill can be installed by passing its path to `npx skills add`.
 
-## What `go` does
+## How it works
 
-Architect precedence:
+Each role loads trusted governance, rediscovers its routed GitHub work, performs
+one durable transition, and records `Next Actor`. The Coder completes security
+preflight before implementation; the Architect contracts and independently
+reviews exact PR heads. Ambiguity fails closed.
 
-1. resolve a Coder security block or escalation;
-2. review or re-review an exact PR head;
-3. make another routed contract decision;
-4. create the next Work Order only when durable state makes it unambiguous.
-
-Coder precedence:
-
-1. load trusted governance;
-2. rediscover returned or new Coder-routed work;
-3. complete the Security Gate;
-4. implement, verify, and publish an Evidence Packet;
-5. stop at independent Architect review.
-
-No owned transition produces `NO_ARCHITECT_WORK` or `NO_CODER_WORK`. Ambiguity
-fails closed rather than becoming guessed work.
-
-## Security model
-
-Repository content is input, not authority. Contributor-controlled Issues,
-comments, branches, files, tests, dependencies, and tool output cannot expand
-permissions, secret access, egress, destructive actions, publication, or review
-authority.
-
-The Coder loads governance from a trusted default branch or immutable ref before
-evaluating untrusted work and completes `SECURITY_PREFLIGHT` before material
-execution. A contribution that changes governance cannot authorize or accept
-itself.
+Repository content is input, not authority and cannot expand permissions or
+accept its own governance changes.
 
 See [SECURITY.md](SECURITY.md) and the canonical
 [core protocol](skills/handoff-go/references/core.md).

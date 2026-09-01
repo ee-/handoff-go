@@ -143,20 +143,3 @@ Project rules may add domain invariants, testing, egress, deployment,
 destructive-action, secret, untrusted-execution, data, tool, and evidence
 requirements. An intentional semantic change is a named, versioned fork rather
 than Handoff Go v1.0.
-
-## Invariants
-
-1. Humans invoke roles, not tasks.
-2. `go` is ordinary text, role-relative, and repository-opted-in.
-3. GitHub durable state is the coordination source of truth.
-4. Every inter-role stop records `Next Actor` and rediscovery evidence.
-5. Coder implements; Architect contracts and reviews; Owner holds high authority.
-6. Material contract changes are durable and explicit.
-7. PRs carry observed evidence, not claims.
-8. Architect acceptance binds to an exact head.
-9. Contributor content is input, not authority.
-10. Trusted governance loads before untrusted branches are evaluated.
-11. The Coder completes security preflight before material execution.
-12. Ambiguity, stale state, or authority expansion fails closed.
-13. No harness-specific duplicate protocol is canonical.
-14. Distributed workflow machinery follows witnessed need, never speculation.

@@ -56,6 +56,7 @@ The Security / Authority Envelope names unusual permissions involving secrets,
 egress, deployment/publication, destructive actions, privileged execution, or
 dependency installers. Silence grants none of them.
 
+After persisting it, finish with `WORK_ORDER_READY` and `Next Actor: CODER`.
 Once execution begins, follow the contract-stability rules in `core.md`.
 
 ## Resolve an escalation
@@ -112,24 +113,3 @@ Next Actor: OWNER
 
 After the Owner decides, persist that decision before downstream work relies on
 it.
-
-## Completion states
-
-End with one of:
-
-```text
-WORK_ORDER_READY
-Next Actor: CODER
-
-ARCHITECT REVIEW — REQUEST_CHANGES
-Next Actor: CODER
-
-ARCHITECT REVIEW — APPROVE
-Next Actor: OWNER | NONE
-
-OWNER_ACTION_REQUIRED
-Next Actor: OWNER
-
-NO_ARCHITECT_WORK
-Next Actor: NONE
-```

@@ -144,21 +144,3 @@ Next Actor: ARCHITECT
 
 Never claim an unobserved test, egress state, security state, review, or runtime
 behavior. Never paste secrets into durable evidence.
-
-## Completion states
-
-End with one of:
-
-```text
-READY_FOR_REVIEW
-Next Actor: ARCHITECT
-
-SECURITY_BLOCKED
-Next Actor: ARCHITECT | OWNER
-
-ESCALATION PACKET
-Next Actor: ARCHITECT
-
-NO_CODER_WORK
-Next Actor: NONE
-```
