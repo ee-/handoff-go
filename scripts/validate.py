@@ -247,6 +247,25 @@ def main() -> None:
           "Event Watch persist job must hold write permissions")
     check("openai-api-key:" not in persist_part,
           "Event Watch persist job must not hold the model key")
+    # Read-only discovery + structured manifest + safe persistence.
+    check("issues: read" in reason_part and "pull-requests: read" in reason_part,
+          "Event Watch reason job must hold read-only Issues/PRs permission")
+    check(".codex/github-state.md" in ew_text,
+          "Event Watch reason job must produce a read-only durable-state snapshot")
+    check("output-schema-file:" in ew_text,
+          "Event Watch reason job must emit a structured bounded manifest")
+    check(Path(".github/codex/handoff-go-event-watch-schema.json").is_file(),
+          "Event Watch manifest schema file missing")
+    check("GH_TOKEN: ${{ github.token }}" in persist_part,
+          "Event Watch persist job must pass the GitHub token to gh")
+    check("git config user.name" in persist_part,
+          "Event Watch persist job must configure a bot identity")
+    check("git apply --check" in persist_part,
+          "Event Watch persist job must fail closed on a stale patch")
+    check("git add -N ." in ew_text,
+          "Event Watch patch must include untracked files")
+    check("git apply event-watch.patch || true" not in persist_part,
+          "Event Watch persist job must not swallow a patch-apply failure")
 
     # All third-party Actions across workflows must be pinned to a full commit SHA.
     for wf in (ROOT / ".github/workflows").glob("*.yml"):

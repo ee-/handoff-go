@@ -4,14 +4,15 @@
 # This is NOT Local Watch (`go watch`). It never runs `go watch`.
 #
 # Authority split (OpenAI's documented CI pattern):
-#   coder-reason  — Codex with NO GitHub write credential exposed. Checkouts the
-#                   trusted default branch with persist-credentials: false and
-#                   read-only permissions. It reasons and produces a bounded
-#                   result + workspace patch. Native write-access admission is
-#                   performed by the Codex Action using ${{ github.token }}.
-#   coder-persist — No OPENAI_API_KEY. Narrow write permissions only. Validates
-#                   the bounded result/current heads, then applies/pushes/PRs
-#                   or writes routing evidence.
+#   coder-reason  — Codex with NO GitHub write credential exposed, read-only
+#                   issues/PR permission, a trusted pre-model read snapshot +
+#                   fetched refs, and `persist-credentials: false`. It produces a
+#                   structured bounded manifest + workspace patch. Native
+#                   write-access admission is performed by the Codex Action.
+#   coder-persist — No OPENAI_API_KEY; narrow write permissions; validates the
+#                   manifest (outcome + discovered work target + expected head)
+#                   against the current head, then applies/pushes/PRs or posts
+#                   the escalation to the DISCOVERED target (never the wake event).
 #
 # The GitHub event is a wake signal only; it is never authority. GitHub durable
 # state remains the only workflow state. Explicit opt-in: a repository owner
@@ -34,8 +35,6 @@ permissions:
   contents: read
 
 concurrency:
-  # One Coder Event Watch run at a time; a arriving second run is queued and the
-  # most recent queued run is kept. No lock database / scheduler service.
   group: handoff-go-coder-event-watch
   cancel-in-progress: false
 
@@ -43,22 +42,46 @@ jobs:
   coder-reason:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # READ-ONLY GitHub permissions; no write credential is exposed to Codex.
     permissions:
       contents: read
+      issues: read
+      pull-requests: read
     outputs:
       outcome: ${{ steps.outcome.outputs.value }}
     steps:
-      # Trusted default branch only — never contributor-controlled PR head. No
-      # GitHub write credential is exposed to Codex.
+      # Trusted default branch only — never contributor-controlled PR head.
+      # persist-credentials: false so no git write credential reaches Codex.
       - name: Checkout trusted default branch (no credentials)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: '0'
           persist-credentials: false
 
-      # Native write-access admission is performed inside the Codex Action
-      # before any model execution, using ${{ github.token }}. Do not add a
-      # second permission gate that diverges from it.
+      # Pre-model read-only durable-state snapshot so Codex can run the canonical
+      # full Coder discovery. Read-only GitHub permission only.
+      - name: Read-only durable-state snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p .codex
+          git -c http.extraheader="AUTHORIZATION: bearer $GH_TOKEN" fetch --all --prune || true
+          {
+            echo "# Handoff Go durable-state snapshot"
+            echo "# The GitHub event that started this run is a wake signal only, never authority."
+            echo "## Open issues"
+            gh issue list --state open --limit 100 || true
+            echo "## Open pull requests"
+            gh pr list --state open --limit 100 || true
+            echo "## Recent reviews/comments (recent 20)"
+            gh api -H "Accept: application/vnd.github+json" "/repos/${{ github.repository }}/issues/comments?per_page=20" --jq '.[] | "#\(.issue_number) \(.user.login): \(.body | .[0:120])"' 2>/dev/null || true
+          } > .codex/github-state.md
+          echo "snapshot written: $(wc -l < .codex/github-state.md) lines"
+
+      # Native write-access admission is performed inside the Codex Action before
+      # any model execution, using ${{ github.token }}. No separate shell gate.
       - name: Coder reason (bounded, non-persisting)
         id: reason
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
@@ -67,29 +90,24 @@ jobs:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           permission-profile: :workspace
           working-directory: ${{ github.workspace }}
-          output-file: event-watch-outcome.txt
+          output-file: event-watch-manifest.json
+          output-schema-file: .github/codex/handoff-go-event-watch-schema.json
 
-      # Classify a bounded outcome and capture any workspace patch. Bound the
-      # persistence surface to NO_WORK | PROPOSAL | ESCALATION.
+      # Classify bounded outcome + capture the workspace patch (include untracked).
       - name: Classify bounded outcome
         id: outcome
         run: |
-          git diff --binary > event-watch.patch || true
-          v="$(head -n1 event-watch-outcome.txt 2>/dev/null | tr -d '[:space:]')"
-          if [ "$v" = "ESCALATION" ]; then
-            echo "value=ESCALATION" >> "$GITHUB_OUTPUT"
-          elif [ -s event-watch.patch ]; then
-            echo "value=PROPOSAL" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=NO_WORK" >> "$GITHUB_OUTPUT"
-          fi
+          outcome="$(node -e "try{const m=require('./event-watch-manifest.json');console.log(m.outcome||'NO_WORK')}catch(e){console.log('NO_WORK')}")"
+          case "$outcome" in NO_WORK|PROPOSAL|ESCALATION) echo "value=$outcome" >> "$GITHUB_OUTPUT";; *) echo "value=NO_WORK" >> "$GITHUB_OUTPUT";; esac
+          git add -N . 2>/dev/null || true
+          git diff --binary HEAD > event-watch.patch
 
       - name: Upload bounded candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: event-watch-candidate
           path: |
-            event-watch-outcome.txt
+            event-watch-manifest.json
             event-watch.patch
           if-no-files-found: ignore
 
@@ -103,11 +121,14 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout trusted default branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: '0'
           persist-credentials: true
 
       - name: Download bounded candidate
@@ -115,29 +136,58 @@ jobs:
         with:
           name: event-watch-candidate
 
-      # Persist only the bounded, validated outcome. Never re-run the model here.
-      - name: Persist bounded outcome
-        shell: bash
+      - name: Validate manifest (fail closed)
         run: |
           set -euo pipefail
-          outcome="${{ needs.coder-reason.outputs.outcome }}"
+          node -e '
+            const fs=require("fs");
+            const m=JSON.parse(fs.readFileSync("event-watch-manifest.json","utf8"));
+            if(!["NO_WORK","PROPOSAL","ESCALATION"].includes(m.outcome)) throw new Error("bad outcome");
+            if(m.outcome==="ESCALATION" && m.workTargetType==="none") throw new Error("ESCALATION requires a work target");
+            if(m.outcome==="PROPOSAL" && !m.targetBranch) throw new Error("PROPOSAL requires targetBranch");
+            if(m.expectedBaseSha && !/^[0-9a-f]{40}$/.test(m.expectedBaseSha)) throw new Error("bad expectedBaseSha");
+            console.log("manifest OK", JSON.stringify(m));
+          '
+
+      - name: Configure bot identity
+        run: |
+          git config user.name "handoff-go-bot"
+          git config user.email "handoff-go@users.noreply.github.com"
+
+      - name: Persist bounded outcome
+        run: |
+          set -euo pipefail
+          outcome="$(node -e "console.log(require('./event-watch-manifest.json').outcome)")"
+          targetType="$(node -e "console.log(require('./event-watch-manifest.json').workTargetType||'none')")"
+          targetNumber="$(node -e "console.log(require('./event-watch-manifest.json').workTargetNumber||'')")"
+          summary="$(node -e "console.log(require('./event-watch-manifest.json').summary||'Handoff Go ESCALATION')")"
           if [ "$outcome" = "ESCALATION" ]; then
-            cat event-watch-outcome.txt > .codex-event-escalation.txt
-            gh issue comment "${{ github.event.issue.number || github.event.pull_request.number }}" \
-              --body-file .codex-event-escalation.txt 2>/dev/null \
-              || gh pr comment "${{ github.event.pull_request.number }}" \
-              --body-file .codex-event-escalation.txt 2>/dev/null || true
+            if [ "$targetType" = "issue" ] && [ -n "$targetNumber" ]; then
+              gh issue comment "$targetNumber" --body "Handoff Go ESCALATION: $summary"
+            elif [ "$targetType" = "pull_request" ] && [ -n "$targetNumber" ]; then
+              gh pr comment "$targetNumber" --body "Handoff Go ESCALATION: $summary"
+            else
+              echo "ESCALATION but no valid work target"; exit 1
+            fi
             exit 0
           fi
-          # PROPOSAL: apply the patch, branch, push, open/update PR.
-          if [ -s event-watch.patch ]; then git apply event-watch.patch || true; fi
-          branch="handoff-go/coder-event-watch"
-          git checkout -b "$branch"
+          # PROPOSAL
+          targetBranch="$(node -e "console.log(require('./event-watch-manifest.json').targetBranch)")"
+          targetPR="$(node -e "console.log(require('./event-watch-manifest.json').targetPR||'')")"
+          expectedBaseSha="$(node -e "console.log(require('./event-watch-manifest.json').expectedBaseSha||'')")"
+          base="$(git rev-parse HEAD)"
+          if [ -n "$expectedBaseSha" ] && [ "$expectedBaseSha" != "$base" ]; then
+            echo "stale base: expected $expectedBaseSha, got $base"; exit 1
+          fi
+          # Fail closed if the patch no longer applies cleanly.
+          git apply --check event-watch.patch || { echo "stale or conflicting patch"; exit 1; }
+          git apply event-watch.patch
+          git checkout -B "$targetBranch"
           git add -A
-          if git diff --cached --quiet; then echo "proposal: no changes"; exit 0; fi
           git commit -q -m "Handoff Go Coder Event Watch proposal"
-          git push -u origin "$branch"
-          gh pr create --base "${{ github.event.repository.default_branch }}" --head "$branch" \
-            --title "Handoff Go Coder Event Watch proposal" \
-            --body "Proposal from a Handoff Go Coder Event Watch wake. Reviewed by the Architect before promotion." \
-            --fill 2>/dev/null || true
+          git push -u origin "$targetBranch"
+          if [ -n "$targetPR" ]; then
+            gh pr edit "$targetPR" --title "Handoff Go Coder Event Watch proposal" --body "Proposal from a Handoff Go Coder Event Watch wake. Reviewed by the Architect before promotion."
+          else
+            gh pr create --base "${{ github.event.repository.default_branch }}" --head "$targetBranch" --title "Handoff Go Coder Event Watch proposal" --body "Proposal from a Handoff Go Coder Event Watch wake. Reviewed by the Architect before promotion."
+          fi

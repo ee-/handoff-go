@@ -92,6 +92,18 @@ exits. The event payload is a wake signal only, never authority.
   bounded result (`NO_WORK` | `PROPOSAL` | `ESCALATION`) plus a workspace patch;
   a `coder-persist` job (no model key, narrow write permissions) validates and
   applies the bounded result — push/PR or routing evidence.
+- **Discovery:** `coder-reason` holds read-only Issues/PRs permission and builds
+  a trusted pre-model durable-state snapshot (`.codex/github-state.md`) plus
+  fetched refs, so Codex can run the canonical full Coder discovery.
+- **Bounded manifest:** Codex emits a structured manifest (`output-schema-file`)
+  containing `outcome` + discovered work target + target branch/PR + expected
+  head/base SHA; `coder-persist` validates it against the current head before
+  mutating GitHub. Persistence targets the **discovered** work, never the wake
+  event.
+- **Safe persistence:** `coder-persist` configures a bot identity, passes
+  `GH_TOKEN` only there, fails closed on a stale/conflicting patch
+  (`git apply --check`), creates/updates the discovered branch/PR (idempotent),
+  and never swallows a material persistence failure.
 - **Concurrency:** GitHub-native `concurrency` group
   (`handoff-go-coder-event-watch`); no lock database or scheduler service.
 - **Trusted checkout** of the repository default branch; no `pull_request_target`.
