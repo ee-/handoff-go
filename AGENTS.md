@@ -4,7 +4,8 @@
 ## Handoff Go
 
 - Version: 1.0.0
-- Immutable ref: `v1.0.0` after release; before tagging, PR #1's latest exact reviewed head
+- Immutable ref: `v1.0.0` (applied at release)
+- Pre-release: dogfood here; not yet an immutable production pin
 - Skill: `skills/handoff-go/SKILL.md`
 - Trusted default branch: `main`
 - Owner: GitHub repository owner `@ee-`
