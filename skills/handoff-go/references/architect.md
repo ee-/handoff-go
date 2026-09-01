@@ -28,6 +28,10 @@ Create a GitHub Issue using this minimum contract:
 
 # Current State
 
+# Repository / Target Branch
+
+# Dependencies
+
 # Decisions Already Made
 
 # Scope
@@ -41,8 +45,10 @@ Create a GitHub Issue using this minimum contract:
 # Implementation Guidance
 
 # Acceptance Criteria
+- AC-1:
 
 # Required Evidence
+- AC-1:
 
 # Escalation Conditions
 
@@ -54,7 +60,11 @@ Next Actor: CODER
 
 The Security / Authority Envelope names unusual permissions involving secrets,
 egress, deployment/publication, destructive actions, privileged execution, or
-dependency installers. Silence grants none of them.
+dependency installers. It names any Owner/human gate for `AGENTS.md`, Handoff
+Go, security policy, workflows, CODEOWNERS, rulesets, permissions, or credential
+configuration. Silence grants none of them. Number every acceptance criterion
+and map required evidence to the same ID. Dependencies state what resolution
+counts as satisfactory.
 
 After persisting it, finish with `WORK_ORDER_READY` and `Next Actor: CODER`.
 Once execution begins, follow the contract-stability rules in `core.md`.

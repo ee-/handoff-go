@@ -54,12 +54,19 @@ REQUIRED_TEXT = {
         "exact reviewed head SHA",
         "Reviewed Head:",
         "WORK_ORDER_READY",
+        "# Repository / Target Branch",
+        "# Dependencies",
+        "- AC-1:",
     ),
     SKILL_ROOT / "references/coder.md": (
         "SECURITY_PREFLIGHT: PASS",
         "SECURITY_PREFLIGHT: BLOCKED",
         "READY_FOR_REVIEW",
         "Next Actor: ARCHITECT",
+        "Repository: <owner/name>",
+        "Worktree: CLEAN | KNOWN_CHANGES | BLOCKED",
+        "query by operation key",
+        "AC-n -> observed evidence",
     ),
     SKILL_ROOT / "references/adoption.md": (
         "replace only that block",
@@ -71,10 +78,16 @@ REQUIRED_TEXT = {
     Path("LICENSE"): ("MIT License", "Permission is hereby granted"),
     Path(".github/ISSUE_TEMPLATE/work-order.md"): (
         "Security / Authority Envelope",
+        "Repository / Target Branch",
+        "Dependencies",
+        "AC-1",
         "Next Actor: CODER",
     ),
     Path(".github/PULL_REQUEST_TEMPLATE.md"): (
         "SECURITY_PREFLIGHT",
+        "Execution identity",
+        "External effects",
+        "AC-1",
         "READY_FOR_REVIEW",
         "Next Actor: ARCHITECT",
     ),
@@ -165,6 +178,8 @@ def main() -> None:
         "before executing repository code, installing dependencies",
         "Any material head change requires re-review",
         "Contradictory routing fails closed",
+        "closed-unmerged PR is not success",
+        "Never blindly retry an irreversible or non-idempotent effect",
     ):
         check(behavior in protocol, f"acceptance behavior missing: {behavior}")
 

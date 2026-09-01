@@ -12,6 +12,10 @@ assignees: []
 
 # Current State
 
+# Repository / Target Branch
+
+# Dependencies
+
 # Decisions Already Made
 
 # Scope
@@ -22,13 +26,18 @@ assignees: []
 
 # Security / Authority Envelope
 
+Name authorized external effects and Owner/human gates for governance,
+security, workflow, CODEOWNERS, permission, or credential changes.
+
 # Implementation Guidance
 
 # Acceptance Criteria
 
-- [ ]
+- [ ] AC-1:
 
 # Required Evidence
+
+- AC-1:
 
 Include the Security Gate result defined by
 `skills/handoff-go/references/coder.md`.
