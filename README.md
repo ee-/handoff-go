@@ -2,6 +2,10 @@
 
 **Architect decides. Coder goes. GitHub remembers.**
 
+English | [简体中文](README.zh-CN.md)
+
+> The English README is the canonical source of truth. Translations follow it.
+
 Handoff Go is a dependency-free agent skill for delegating complex repository
 work from an Architect in ChatGPT Chat to a coding agent without making the
 human relay plans, Issue numbers, PR links, branches, or blockers.
