@@ -111,6 +111,8 @@ Every handoff records:
 Next Actor: CODER | ARCHITECT | NONE
 ```
 
+`NONE` is terminal: use it only when no protocol work remains for any role.
+
 Use the latest applicable trusted routing record. Free-form discussion does
 not override it. Contradictory routing fails closed.
 

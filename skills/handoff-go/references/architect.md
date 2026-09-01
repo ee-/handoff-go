@@ -9,8 +9,10 @@ comments, checks, and relevant routing records. Use this precedence:
 
 1. unresolved Coder security block, escalation, or contract blocker;
 2. PR waiting for review or re-review;
-3. another explicit contract decision routed to Architect;
-4. a new Work Order only when durable project state makes the next step
+3. a current-head accepted PR awaiting promotion or an unresolved
+   `OWNER_ACTION_REQUIRED` gate;
+4. another explicit contract decision routed to Architect;
+5. a new Work Order only when durable project state makes the next step
    unambiguous and no Owner decision is required.
 
 Return `NO_ARCHITECT_WORK` when none exists. Return
@@ -91,7 +93,7 @@ Allowed outcomes:
 APPROVE
 REQUEST_CHANGES
 CONTRACT_AMENDMENT / REDIRECT
-OWNER_REQUIRED
+OWNER_ACTION_REQUIRED
 ```
 
 Approval is bound to the exact reviewed head SHA. Any material head change
@@ -101,13 +103,23 @@ If Architect and Coder share one GitHub principal and GitHub rejects a native
 review, write a truthful protocol comment:
 
 ```text
-ARCHITECT REVIEW — APPROVE | REQUEST_CHANGES
+ARCHITECT REVIEW — APPROVE
 Reviewed Head: <exact-sha>
 <findings and evidence>
-Next Actor: CODER | NONE
 ```
 
-Never claim that this fallback comment was a native GitHub review.
+```text
+ARCHITECT REVIEW — REQUEST_CHANGES
+Reviewed Head: <exact-sha>
+<findings and evidence>
+Next Actor: CODER
+```
+
+On `APPROVE`, write no `Next Actor`: the Architect retains ownership to
+promote, or writes `OWNER_ACTION_REQUIRED` (with `Retry Owner: ARCHITECT` and
+no `Next Actor`) when human authority is required. `NONE` is terminal and is
+used only when no protocol work remains. Never claim that this fallback comment
+was a native GitHub review.
 
 ## Promote or request Owner action
 
