@@ -1,10 +1,18 @@
 # Publication Checklist
 
-Handoff Go is prepared for open source but remains private. Publication requires
-an explicit Owner decision after all applicable boxes are checked against the
-exact release head.
+Handoff Go is prepared for open source but remains private. Publication is a
+three-phase, gated transition ordered below. The invariant at every phase
+boundary is:
 
-## Repository
+```text
+public != released
+```
+
+## Phase A — Pre-public gate
+
+Everything below must pass **before** the repository's visibility changes.
+
+### Readiness
 
 - [x] Public name and slug selected: Handoff Go / `handoff-go`.
 - [x] Version set to `1.0.0`.
@@ -13,26 +21,38 @@ exact release head.
 - [x] Single distributable skill package and UI metadata validate.
 - [x] Package layout preserves supporting references with the current `skills` CLI.
 - [x] No runtime dependencies, hooks, plugins, or host-specific adapters.
+- [x] Release candidate validation passes on the exact release head.
 - [ ] Exact release head independently reviewed and accepted.
-- [ ] Repository renamed to `ee-/handoff-go` after merge.
-- [ ] Description and topics configured after rename.
+- [ ] Owner explicitly authorizes changing repository visibility.
 
-## Security and privacy
+### Security and privacy
 
 - [x] All refs and commits scanned for credentials and private keys.
 - [x] URLs, email addresses, personal data, and internal identifiers manually reviewed.
 - [x] Contributor-controlled governance cannot authorize itself by protocol.
 - [x] Privileged execution requires a passed Security Gate.
-- [ ] Branch protection and required review/check policy configured.
+
+## Phase B — Public visibility transition
+
+After the Owner authorizes making the repository public:
+
+- [ ] Repository renamed to `ee-/handoff-go` if not already done.
+- [ ] Branch protection / ruleset or equivalent available protection configured.
 - [ ] GitHub private vulnerability reporting enabled where available.
+- [ ] Repository description and topics configured if appropriate.
+- [ ] Real public install path verified: `npx skills add ee-/handoff-go`.
 
-## Distribution
+Passing Phase B makes the repository public; it does **not** mean v1.0.0 is
+released.
 
-- [x] Local project installation smoke test passes on the release candidate.
-- [ ] `v1.0.0` tag created after merge.
-- [ ] Draft GitHub release prepared while the repository remains private.
-- [ ] Public install command verified after visibility changes.
-- [ ] Owner explicitly authorizes repository and release publication.
+## Phase C — Release gate
+
+Only after every Phase B check passes:
+
+- [ ] `v1.0.0` tag created.
+- [ ] GitHub Release prepared and published.
+- [ ] Released install path verified.
+- [ ] Owner release authorization recorded.
 
 Changing visibility or publishing the release is outside the current Work Order.
 
@@ -52,6 +72,6 @@ Changing visibility or publishing the release is outside the current Work Order.
   stale-head rejection, and contradictory-routing failure.
 - The repository is private on `main`. GitHub currently returns HTTP 403 for
   branch protection on this private repository under the present account plan;
-  required review/check protection therefore remains a publication gate.
+  required review/check protection therefore remains a Phase B gate.
 - Private vulnerability reporting could not be verified through the repository
-  API while private and remains a publication gate.
+  API while private and remains a Phase B gate.
