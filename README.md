@@ -59,7 +59,15 @@ Daily use is ordinary text in the relevant role session:
 
 ```text
 go
+go watch        # keep this Coder session responsive (default 1m)
+go watch 5m     # custom interval, minimum 60s
+go watch stop   # stop watching
 ```
+
+`go watch` runs one normal Coder `go` discovery immediately, then repeats at the
+requested interval. It is a wake mechanism, not workflow state; each tick reloads
+trusted governance and rediscover the durable GitHub state. Harnesses use their
+native scheduling/extension capability (see `skills/handoff-go/references/watch.md`).
 
 This repository is currently private and pre-publication. From a local checkout,
 the same skill can be installed by passing its path to `npx skills add`.

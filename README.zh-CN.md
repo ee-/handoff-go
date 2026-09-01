@@ -54,7 +54,12 @@ $handoff-go check
 
 ```text
 go
+go watch        # 让当前 Coder session 保持响应（默认 1m）
+go watch 5m     # 自定义间隔，最小 60s
+go watch stop   # 停止 watch
 ```
+
+`go watch` 会先立刻执行一次正常的 Coder `go` discovery，然后按请求的间隔重复。它是 wake 机制，不是 workflow state；每次 tick 都会重新加载可信 governance 并重新发现 durable GitHub state。各 harness 使用其原生 scheduling/extension 能力（参见 `skills/handoff-go/references/watch.md`）。
 
 本 repository 当前仍为 private，处于 pre-publication 阶段。从本地 checkout 也可以把路径直接传给 `npx skills add` 来安装同一个 skill。
 

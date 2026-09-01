@@ -1,4 +1,14 @@
-# Changelog
+## 1.1.0 — pending
+
+Coder watch (`go watch`):
+
+- `go watch`, `go watch <interval>`, `go watch stop` Coder command surface;
+- default 1m cadence, minimum 60s, immediate first discovery;
+- canonical watch-tick prompt and shared dependency-free parser core;
+- OMP and Pi native extension adapters (managed timer + follow-up wake, no
+  overlapping runs, session-shutdown cleanup);
+- per-harness compatibility table (Claude Code, OpenCode, DeepSeek Harness,
+  Codex) with native capabilities and a Codex `WATCH_UNSUPPORTED` result.
 
 ## 1.0.0 — pending
 
