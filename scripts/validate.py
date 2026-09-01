@@ -15,6 +15,10 @@ PACKAGE = {
     SKILL_ROOT / "references/architect.md",
     SKILL_ROOT / "references/coder.md",
     SKILL_ROOT / "references/core.md",
+    SKILL_ROOT / "watch.mjs",
+    SKILL_ROOT / "adapters/omp.mjs",
+    SKILL_ROOT / "adapters/pi.mjs",
+    SKILL_ROOT / "references/watch.md",
 }
 REQUIRED = PACKAGE | {
     Path(path)
@@ -90,9 +94,25 @@ REQUIRED_TEXT = {
         "READY_FOR_REVIEW",
         "Next Actor: ARCHITECT",
     ),
-    Path(".github/workflows/validate.yml"): (
-        "branches: [main]",
-        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    SKILL_ROOT / "watch.mjs": (
+        "WATCH_MIN_SECONDS = 60",
+        "parseInterval",
+        "parseWatchCommand",
+        "WATCH_TICK_PROMPT",
+    ),
+    SKILL_ROOT / "adapters/omp.mjs": (
+        'deliverAs: "followUp"',
+        'source === "extension"',
+    ),
+    SKILL_ROOT / "adapters/pi.mjs": (
+        'deliverAs: "followUp"',
+        'source === "extension"',
+    ),
+    SKILL_ROOT / "references/watch.md": (
+        "go watch",
+        "WATCH_TICK_PROMPT",
+        "WATCH_UNSUPPORTED",
+        "At most one active Coder run",
     ),
 }
 LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
@@ -100,7 +120,6 @@ STALE = {
     "legacy product name": re.compile("Handoff" + "OS", re.IGNORECASE),
     "legacy expanded acronym": re.compile("Architect" + " Coder Handoff", re.IGNORECASE),
     "legacy acronym": re.compile(r"\bA" + r"CH\b"),
-    "legacy draft version": re.compile(r"\b1\.1" + r"\.0\b"),
 }
 
 

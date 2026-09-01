@@ -38,9 +38,14 @@ security, or repository permissions.
   read exactly one role guide:
   - Architect: [architect.md](references/architect.md)
   - Coder: [coder.md](references/coder.md)
+- **go watch** — Coder only. Read [core.md](references/core.md),
+  [coder.md](references/coder.md), and the watch rules in
+  [watch.md](references/watch.md). Run one Coder `go` discovery immediately,
+  then repeat at the requested interval (default 1m). See `watch.md` for the
+  command surface and per-harness capability.
 
 If no mode was supplied, use `go` only in an opted-in repository; otherwise
-show the three modes above.
+show the four modes above.
 
 ## Role gate
 

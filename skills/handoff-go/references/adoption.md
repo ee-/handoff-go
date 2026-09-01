@@ -62,6 +62,14 @@ operations, deployment/publication authority, or bypass review.
 
 Do not leave angle-bracket placeholders in a completed project bootstrap.
 
+## Watch
+
+`go watch` (Coder only) ships with the skill — the shared core (`watch.mjs`)
+and the OMP/Pi extension glue in `adapters/`. Setup installs no coding-agent
+binary and configures no harness you are not using. Other Coder harnesses drive
+`go watch` through their native scheduling capability; see
+[watch.md](watch.md) for the compatibility table.
+
 ## Check
 
 Perform a read-only validation:
