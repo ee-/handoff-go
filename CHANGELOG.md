@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.1.0 — Architect Coder Handoff
+
+Protocol rename and open-source hardening draft.
+
+Changed:
+
+- renamed the protocol from **HandoffOS** to **Architect Coder Handoff (ACH)**;
+- renamed the implementation role from **Executor** to **Coder** and routing from `EXECUTOR` to `CODER`;
+- made **ChatGPT Chat → Coder** the primary reference workflow;
+- retained coding-harness neutrality across Codex, Claude Code, OpenCode, Pi, Hermes, OMP, and similar tools;
+- added a mandatory Coder Security Gate before material execution;
+- defined repository/contributor content as input rather than automatic authority;
+- required trusted governance to be loaded from a trusted base/default branch or pinned ref before evaluating untrusted contributions;
+- added fail-closed handling for security/authority ambiguity;
+- extended Work Order and PR Evidence Packet templates with security-boundary evidence;
+- added `SECURITY.md` with a public-release gate and vulnerability-reporting guidance.
+
+Migration note: consumer repositories using v1.0 terminology must update `Executor` role mappings and durable `Next Actor: EXECUTOR` routing to `Coder` / `Next Actor: CODER` when adopting v1.1.
+
 ## 1.0.0
 
 Initial canonical HandoffOS release.
