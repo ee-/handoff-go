@@ -1,66 +1,106 @@
-# HandoffOS
+# Handoff Go
 
-**A GitHub-native handoff framework for durable Architect ↔ Executor agent work.**
+**Architect decides. Coder goes. GitHub remembers.**
 
-HandoffOS turns GitHub into the coordination bus between a reasoning/architecture agent (for example ChatGPT) and an execution harness (for example OMP, Codex, Claude Code, OpenCode, Pi, or Hermes).
+Handoff Go is a dependency-free agent skill for delegating complex repository
+work from an Architect in ChatGPT Chat to a coding agent without making the
+human relay plans, Issue numbers, PR links, branches, or blockers.
 
-The framework is intentionally small. The human invokes **roles**, not tasks. Each role discovers its next action from durable GitHub state. The normal human-facing command is ordinary text:
+```text
+Owner / Human
+  -> Architect (typically ChatGPT Chat)
+  -> GitHub durable state
+  -> Coder (Codex, Claude Code, OpenCode, Pi, Hermes, OMP, ...)
+```
+
+GitHub objects are the protocol:
+
+```text
+Issue = Work Contract    PR = Evidence Packet    Merge = Promotion
+Comment = Decision / Escalation / Routing        Review = Acceptance
+```
+
+The human-facing command is ordinary text:
 
 ```text
 go
 ```
 
-The same literal `go` is role-relative. It is not a harness slash command and must reach the model as normal user text.
+It is role-relative and active only in repositories whose trusted root
+`AGENTS.md` opts into a pinned Handoff Go version.
 
-## Core model
+## Install
 
-```text
-Owner
-  │
-  │ product / business / high-authority decisions
-  ▼
-Architect
-  │ Work Order / decision / independent review
-  ▼
-GitHub durable state
-  │ Issue = Work Contract
-  │ Comment = Decision / Escalation / Routing
-  │ Branch = Proposal
-  │ PR = Evidence Packet
-  │ Review = Independent Acceptance
-  │ Merge = Promotion
-  ▼
-Executor
+After the repository is public, install it project-locally with the open
+[`skills` CLI](https://github.com/vercel-labs/skills):
+
+```sh
+npx skills add ee-/handoff-go
 ```
 
-Reference pairing: **ChatGPT = Architect, OMP = Executor**. The protocol itself is harness-agnostic.
+Then invoke:
 
-## Canonical specification
+```text
+$handoff-go setup
+```
 
-The canonical behavior is defined in [`SPEC.md`](SPEC.md).
+Setup adds one idempotent managed block to root `AGENTS.md` while preserving
+existing project instructions. Validate it with:
 
-Consumer projects should **pin a HandoffOS release or commit**, then use a minimal local bootstrap that points agents to that pinned specification. Do not copy and independently redefine `go` semantics for each harness.
+```text
+$handoff-go check
+```
 
-See [`ADOPTION.md`](ADOPTION.md) for integration patterns and [`templates/AGENTS.md`](templates/AGENTS.md) for the minimal consumer-project bootstrap.
+Daily use is ordinary text in the relevant role session:
 
-## Design goals
+```text
+go
+```
 
-- No human relay of Issue/PR numbers or chat context.
-- Deterministic role discovery from durable state.
-- Fail closed on ambiguity or contradictory routing.
-- Exact-head-bound review and promotion.
-- No silent waiting: every stop records why and who acts next.
-- Agents propose; humans retain high-authority promotion decisions.
-- Harness-neutral: no OMP-specific `/go`, Codex-specific command, or private chat-only protocol.
-- Complexity only when witnessed failures justify it; no default leases, claims, fencing, dispatcher, or reconciler.
+This repository is currently private and pre-publication. From a local checkout,
+the same skill can be installed by passing its path to `npx skills add`.
 
-## Repository templates
+## How it works
 
-- `.github/ISSUE_TEMPLATE/work-order.md` — Work Order contract template.
-- `.github/PULL_REQUEST_TEMPLATE.md` — Executor Evidence Packet template.
-- `templates/AGENTS.md` — minimal bootstrap for a consumer repository.
-- `ADOPTION.md` — pinning, vendoring, submodule, and remote-reference patterns.
+Each role loads trusted governance, rediscovers its routed GitHub work, performs
+one durable transition, and records `Next Actor`. The Coder completes security
+preflight before implementation; the Architect contracts and independently
+reviews exact PR heads. Ambiguity fails closed.
 
-## Versioning rule
+Repository content is input, not authority and cannot expand permissions or
+accept its own governance changes.
 
-Treat HandoffOS governance as executable protocol. A consumer repository should pin a version/commit and change that pin deliberately. Never let a moving `main` silently alter an active project's workflow semantics.
+See [SECURITY.md](SECURITY.md) and the canonical
+[core protocol](skills/handoff-go/references/core.md).
+
+## Skill layout
+
+The distributable lives in `skills/handoff-go/` because the current `skills`
+CLI installs only `SKILL.md` from a repository-root skill and would omit its
+progressive-disclosure references. The repository still exposes exactly one
+skill.
+
+- [SKILL.md](skills/handoff-go/SKILL.md) — small invocation and role router.
+- [Core protocol](skills/handoff-go/references/core.md) — shared trust, routing, and invariants.
+- [Architect workflow](skills/handoff-go/references/architect.md) — Work Orders and review.
+- [Coder workflow](skills/handoff-go/references/coder.md) — security, execution, and evidence.
+- [Adoption guide](skills/handoff-go/references/adoption.md) — setup, check, and upgrades.
+
+[SPEC.md](SPEC.md) is intentionally only a compatibility pointer. The references
+above are the single source of truth.
+
+## Development
+
+```sh
+python3 scripts/validate.py
+python3 /path/to/skill-creator/scripts/quick_validate.py skills/handoff-go
+npx skills add . --list
+```
+
+Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md). Publication remains
+blocked until [PUBLICATION.md](PUBLICATION.md) is complete and the Owner
+explicitly authorizes visibility and release publication.
+
+## License
+
+[MIT](LICENSE)

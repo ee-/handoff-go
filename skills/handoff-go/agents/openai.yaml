@@ -1,0 +1,6 @@
+interface:
+  display_name: "Handoff Go"
+  short_description: "GitHub-native Architect-to-Coder handoff"
+  default_prompt: "Use $handoff-go to set up this repository."
+policy:
+  allow_implicit_invocation: true
