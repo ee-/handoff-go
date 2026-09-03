@@ -282,6 +282,12 @@ def main() -> None:
           "Event Watch reason job must enforce expectedHeadSha when resuming")
     check("git apply" in persist_part and "git apply event-watch.patch || true" not in persist_part,
           "Event Watch persist job must not swallow a patch-apply failure")
+    check("skills/handoff-go" in reason_part and "AGENTS.md" in reason_part,
+          "Event Watch reason job must verify trusted governance immutability on target head")
+    check("READY_FOR_REVIEW" in persist_part and "Next Actor: ARCHITECT" in persist_part,
+          "Event Watch persist job must persist canonical routing to Architect")
+    check("stale base" in reason_part and "stale base" in persist_part,
+          "Event Watch must stale-guard new branch base in both reason and persist")
 
     # All third-party Actions across workflows must be pinned to a full commit SHA.
     for wf in (ROOT / ".github/workflows").glob("*.yml"):

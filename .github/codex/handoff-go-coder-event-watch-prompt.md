@@ -24,12 +24,15 @@ to `none`, and exit without mutation.
 
 If actionable work exists, enforce the normal Handoff Go Security Gate, identify
 the discovered Coder-owned Work Order, target branch to create or resume, target
-PR when applicable, and expected head and base SHAs.
+PR when applicable, and expected head and base SHAs. For a new branch,
+`expectedBaseSha` must equal the default branch commit OID from the snapshot.
+For resuming an existing branch or PR, `expectedHeadSha` must equal its current
+head commit OID.
 
 If the next transition requires human authority or an Architect decision that is
 outside safe automatic persistence, set `outcome` to `ESCALATION`, keep
-`workTargetType`/`workTargetNumber` on the discovered target, and put the exact
-blocker in `summary`.
-
+`workTargetType`/`workTargetNumber` on the discovered target, put the exact
+blocker in `summary`, and provide `escalationPacket` formatted according to the
+canonical ESCALATION PACKET in `coder.md` ending with `Next Actor: ARCHITECT`.
 Never invent work merely because the event woke you. Output follows the manifest
 schema; produce only a structured manifest.

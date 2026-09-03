@@ -11,7 +11,9 @@
     "targetPR": { "type": ["integer", "null"] },
     "expectedHeadSha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
     "expectedBaseSha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
-    "summary": { "type": ["string", "null"] }
+    "summary": { "type": ["string", "null"] },
+    "evidencePacket": { "type": ["string", "null"] },
+    "escalationPacket": { "type": ["string", "null"] }
   },
   "additionalProperties": false
 }

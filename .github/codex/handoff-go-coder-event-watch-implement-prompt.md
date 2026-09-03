@@ -13,6 +13,12 @@ Act as the configured Coder.
 4. Enforce the Handoff Go Security Gate.
 5. Implement the next authorized bounded transition strictly for this discovered
    Work Order by editing files in the workspace.
+6. Output the canonical Evidence Packet defined in `coder.md` as your final
+   message, documenting what changed, observed verification, Security Gate
+   evidence, and ending with:
+
+READY_FOR_REVIEW
+Next Actor: ARCHITECT
 
 Do not commit, push, or open PRs. Workspace edits will be captured as a patch
 and persisted by the authorized persistence job.

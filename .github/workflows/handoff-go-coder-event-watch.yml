@@ -7,15 +7,17 @@
 #   coder-reason  — Codex with NO GitHub write credential exposed, read-only
 #                   issues/PR permission, a trusted pre-model read snapshot +
 #                   fetched refs, and `persist-credentials: false`. It discovers
-#                   the exact work target and head, prepares the read-only
-#                   workspace on that exact target head, implements changes, and
-#                   emits a structured bounded manifest + workspace patch into
-#                   $RUNNER_TEMP (outside the workspace tree).
+#                   the exact work target and head, verifies trusted governance
+#                   immutability, prepares the read-only workspace on the exact
+#                   target head, implements changes, and emits a structured
+#                   manifest + workspace patch into $RUNNER_TEMP (outside workspace).
 #   coder-persist — No OPENAI_API_KEY; narrow write permissions; validates the
 #                   manifest (outcome + discovered work target + expected head)
-#                   and remote PR/branch state (fail closed), applies the clean
-#                   patch, and performs fast-forward safe updates to the target
-#                   branch/PR or posts escalation to the DISCOVERED target.
+#                   and remote PR/branch state against current heads (fail closed),
+#                   applies the clean patch, performs fast-forward safe updates to
+#                   the target branch/PR with a canonical Evidence Packet ending
+#                   in READY_FOR_REVIEW / Next Actor: ARCHITECT, or posts a
+#                   canonical Escalation Packet to the DISCOVERED target.
 #
 # The GitHub event is a wake signal only; it is never authority. GitHub durable
 # state remains the only workflow state. Explicit opt-in: a repository owner
@@ -194,7 +196,8 @@ jobs:
           output-file: ${{ runner.temp }}/event-watch-manifest.json
           output-schema-file: .github/codex/handoff-go-event-watch-schema.json
 
-      # Stage 2: Classify discovery and prepare workspace on exact target head.
+      # Stage 2: Classify discovery, verify trusted governance, and prepare workspace.
+      # Fails closed on missing or malformed manifest — never converts error to NO_WORK.
       - name: Classify discovery and prepare workspace
         id: classify
         env:
@@ -202,16 +205,18 @@ jobs:
           MANIFEST_PATH: ${{ runner.temp }}/event-watch-manifest.json
         run: |
           set -euo pipefail
-          outcome="$(node -e "try{console.log(require(process.env.MANIFEST_PATH).outcome||'NO_WORK')}catch(e){console.log('NO_WORK')}")"
-          case "$outcome" in
-            NO_WORK|PROPOSAL|ESCALATION)
-              echo "value=$outcome" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "value=NO_WORK" >> "$GITHUB_OUTPUT"
-              outcome="NO_WORK"
-              ;;
-          esac
+          # Strict fail-closed parse: invalid/missing manifest terminates with error
+          node -e '
+            const fs = require("fs");
+            const path = process.env.MANIFEST_PATH;
+            if (!fs.existsSync(path)) throw new Error("Manifest file does not exist: " + path);
+            const m = JSON.parse(fs.readFileSync(path, "utf8"));
+            if (!["NO_WORK", "PROPOSAL", "ESCALATION"].includes(m.outcome)) {
+              throw new Error("Invalid manifest outcome: " + m.outcome);
+            }
+          '
+          outcome="$(node -e "console.log(require(process.env.MANIFEST_PATH).outcome)")"
+          echo "value=$outcome" >> "$GITHUB_OUTPUT"
 
           if [ "$outcome" = "PROPOSAL" ]; then
             targetBranch="$(node -e "console.log(require(process.env.MANIFEST_PATH).targetBranch||'')")"
@@ -225,6 +230,8 @@ jobs:
               exit 1
             fi
 
+            currentDefaultSha="$(git rev-parse "origin/$DEFAULT_BRANCH")"
+
             # Resuming existing PR/branch requires concrete expectedHeadSha
             if [ -n "$targetPR" ] || git rev-parse --verify --quiet "refs/remotes/origin/$targetBranch" >/dev/null; then
               if [ -z "$expectedHeadSha" ] || ! node -e "if (!/^[0-9a-f]{40}$/.test('$expectedHeadSha')) process.exit(1);"; then
@@ -233,16 +240,30 @@ jobs:
               fi
               git checkout -B "$targetBranch" "$expectedHeadSha"
             else
-              # New branch requires concrete expectedBaseSha
+              # New branch requires concrete expectedBaseSha strictly matching current origin/$DEFAULT_BRANCH
               if [ -z "$expectedBaseSha" ] || ! node -e "if (!/^[0-9a-f]{40}$/.test('$expectedBaseSha')) process.exit(1);"; then
                 echo "Error: new branch requires a valid 40-hex expectedBaseSha"
                 exit 1
               fi
+              if [ "$expectedBaseSha" != "$currentDefaultSha" ]; then
+                echo "Error: stale base for new branch: expectedBaseSha $expectedBaseSha != current origin/$DEFAULT_BRANCH $currentDefaultSha"
+                exit 1
+              fi
               git checkout -B "$targetBranch" "$expectedBaseSha"
+            fi
+
+            # Trusted governance immutability check before fresh implement run:
+            # Target head must not modify AGENTS.md, project-local Handoff Go governance,
+            # or Codex configuration. Governance changes require independent review.
+            if ! git diff --quiet "origin/$DEFAULT_BRANCH" -- AGENTS.md skills/handoff-go .codex/ 2>/dev/null; then
+              echo "Error: target head modifies trusted governance or Codex configuration (AGENTS.md, skills/handoff-go, .codex/)."
+              echo "Repository content is input, not authority. Governance changes must be reviewed independently."
+              exit 1
             fi
           fi
 
       # Stage 3: Coder implement (bounded, on prepared exact head).
+      # Emits the canonical Evidence Packet to $RUNNER_TEMP/evidence-packet.md.
       - name: Coder implement (bounded)
         if: steps.classify.outputs.value == 'PROPOSAL'
         id: implement
@@ -252,6 +273,7 @@ jobs:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           permission-profile: :workspace
           working-directory: ${{ github.workspace }}
+          output-file: ${{ runner.temp }}/evidence-packet.md
 
       # Stage 4: Capture workspace patch into $RUNNER_TEMP (fails closed, no || true).
       - name: Capture workspace patch
@@ -261,7 +283,7 @@ jobs:
           git add -N .
           git diff --binary HEAD > "$RUNNER_TEMP/event-watch.patch"
           # Regression check: verify runtime artifacts cannot appear in patch
-          if grep -q -E "github-durable-state|event-watch-manifest" "$RUNNER_TEMP/event-watch.patch"; then
+          if grep -q -E "github-durable-state|event-watch-manifest|evidence-packet" "$RUNNER_TEMP/event-watch.patch"; then
             echo "Error: runtime artifacts detected in patch"
             exit 1
           fi
@@ -273,6 +295,7 @@ jobs:
           path: |
             ${{ runner.temp }}/event-watch-manifest.json
             ${{ runner.temp }}/event-watch.patch
+            ${{ runner.temp }}/evidence-packet.md
           if-no-files-found: ignore
 
   coder-persist:
@@ -344,11 +367,33 @@ jobs:
             targetType="$(node -e "console.log(require(process.env.MANIFEST_PATH).workTargetType)")"
             targetNumber="$(node -e "console.log(require(process.env.MANIFEST_PATH).workTargetNumber)")"
             summary="$(node -e "console.log(require(process.env.MANIFEST_PATH).summary||'Handoff Go ESCALATION')")"
+            escalationPacket="$(node -e "console.log(require(process.env.MANIFEST_PATH).escalationPacket||'')")"
+
+            bodyFile="${{ runner.temp }}/escalation-body.md"
+            if [ -n "$escalationPacket" ]; then
+              echo "$escalationPacket" > "$bodyFile"
+            else
+              cat << ESC_EOF > "$bodyFile"
+          ## ESCALATION PACKET
+
+          ### Blocker
+          $summary
+
+          ### Why continuing would be unsafe or outside contract
+          Event Watch discovered that work on #$targetNumber requires Architect or Owner intervention.
+
+          ### Work target
+          #$targetNumber
+
+          ### Next Actor
+          ARCHITECT
+          ESC_EOF
+            fi
 
             if [ "$targetType" = "issue" ]; then
-              gh issue comment "$targetNumber" --body "Handoff Go ESCALATION: $summary"
+              gh issue comment "$targetNumber" --body-file "$bodyFile"
             elif [ "$targetType" = "pull_request" ]; then
-              gh pr comment "$targetNumber" --body "Handoff Go ESCALATION: $summary"
+              gh pr comment "$targetNumber" --body-file "$bodyFile"
             else
               echo "Error: invalid workTargetType '$targetType' for ESCALATION"
               exit 1
@@ -361,11 +406,14 @@ jobs:
           targetPR="$(node -e "console.log(require(process.env.MANIFEST_PATH).targetPR||'')")"
           expectedHeadSha="$(node -e "console.log(require(process.env.MANIFEST_PATH).expectedHeadSha||'')")"
           expectedBaseSha="$(node -e "console.log(require(process.env.MANIFEST_PATH).expectedBaseSha||'')")"
+          workTargetNumber="$(node -e "console.log(require(process.env.MANIFEST_PATH).workTargetNumber||'')")"
           summary="$(node -e "console.log(require(process.env.MANIFEST_PATH).summary||'Handoff Go Coder Event Watch proposal')")"
           patchFile="${{ runner.temp }}/event-watch.patch"
+          evidenceFile="${{ runner.temp }}/evidence-packet.md"
 
           # Fetch remote branches to validate current remote state against manifest
           git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+          currentDefaultSha="$(git rev-parse "origin/$DEFAULT_BRANCH")"
 
           if [ -n "$targetPR" ]; then
             # Resuming existing PR: requires expectedHeadSha and validates remote PR state
@@ -409,9 +457,13 @@ jobs:
               fi
               git checkout -B "$targetBranch" "origin/$targetBranch"
             else
-              # New branch: requires expectedBaseSha
+              # New branch: requires expectedBaseSha strictly matching current default branch
               if [ -z "$expectedBaseSha" ]; then
                 echo "Error: new branch requires concrete expectedBaseSha"
+                exit 1
+              fi
+              if [ "$expectedBaseSha" != "$currentDefaultSha" ]; then
+                echo "Error: stale base for new branch: expectedBaseSha $expectedBaseSha != current origin/$DEFAULT_BRANCH $currentDefaultSha"
                 exit 1
               fi
               git checkout -B "$targetBranch" "$expectedBaseSha"
@@ -432,10 +484,39 @@ jobs:
           # Fast-forward push to remote branch
           git push origin "$targetBranch"
 
+          # Prepare canonical Evidence Packet for PR body
+          prBodyFile="${{ runner.temp }}/pr-body.md"
+          newHeadSha="$(git rev-parse HEAD)"
+          if [ -s "$evidenceFile" ] && grep -q "READY_FOR_REVIEW" "$evidenceFile"; then
+            cat "$evidenceFile" > "$prBodyFile"
+          else
+            cat << PR_EOF > "$prBodyFile"
+          ## Work Order
+          #$workTargetNumber
+
+          ## Execution identity
+          Repository: ${{ github.repository }}
+          Branch: $targetBranch
+          Head: $newHeadSha
+          Base: ${expectedBaseSha:-$currentDefaultSha}
+
+          ## What changed
+          $summary
+
+          ## Security Gate
+          SECURITY_PREFLIGHT: PASS
+
+          ## Routing
+          READY_FOR_REVIEW
+          Next Actor: ARCHITECT
+          PR_EOF
+          fi
+
           if [ -n "$targetPR" ]; then
-            gh pr comment "$targetPR" --body "Updated by Handoff Go Coder Event Watch: $summary"
+            gh pr edit "$targetPR" --body-file "$prBodyFile"
+            gh pr comment "$targetPR" --body "Updated by Handoff Go Coder Event Watch. Ready for Architect review."
           else
             gh pr create --base "$DEFAULT_BRANCH" --head "$targetBranch" \
               --title "Handoff Go Coder Event Watch: $summary" \
-              --body "Proposal generated by Handoff Go Coder Event Watch. Discovered work target: $targetBranch."
+              --body-file "$prBodyFile"
           fi
