@@ -252,8 +252,8 @@ def main() -> None:
           "Event Watch reason job must hold read-only Issues/PRs permission")
     check("RUNNER_TEMP/github-durable-state.json" in ew_text,
           "Event Watch reason job must produce a complete structured durable-state snapshot in RUNNER_TEMP")
-    check("gh api graphql" in ew_text,
-          "Event Watch must query complete durable state via GraphQL")
+    check("gh api graphql" in ew_text and "pageInfo" in ew_text and "hasNextPage" in ew_text,
+          "Event Watch must query complete durable state via GraphQL and check for truncation")
     check("output-schema-file:" in ew_text,
           "Event Watch reason job must emit a structured bounded manifest")
     check(Path(".github/codex/handoff-go-event-watch-schema.json").is_file(),
@@ -276,8 +276,10 @@ def main() -> None:
           "Event Watch persist job must configure a bot identity")
     check("git apply --check" in persist_part,
           "Event Watch persist job must fail closed on a stale patch")
-    check("git add -N ." in ew_text,
-          "Event Watch patch must include untracked files")
+    check("git add -N ." in ew_text and "git add -N . 2>/dev/null || true" not in ew_text,
+          "Event Watch patch capture must fail closed on git add -N")
+    check("expectedHeadSha" in reason_part,
+          "Event Watch reason job must enforce expectedHeadSha when resuming")
     check("git apply" in persist_part and "git apply event-watch.patch || true" not in persist_part,
           "Event Watch persist job must not swallow a patch-apply failure")
 

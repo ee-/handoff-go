@@ -65,13 +65,14 @@ jobs:
       # Pre-model complete structured durable-state snapshot so Codex can run
       # canonical full Coder discovery. Read-only GitHub permission only.
       # Snapshot is written to $RUNNER_TEMP to keep it outside the proposal tree.
-      # Fails closed if fetch or durable-state query fails.
+      # Fails closed if fetch or durable-state query fails or is truncated.
       - name: Read-only durable-state snapshot
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git -c http.extraheader="AUTHORIZATION: bearer $GH_TOKEN" fetch origin '+refs/heads/*:refs/remotes/origin/*' --prune --tags
+          snapshotPath="$RUNNER_TEMP/github-durable-state.json"
           gh api graphql -F owner="${{ github.repository_owner }}" -F repo="${{ github.event.repository.name }}" -f query='
             query($owner: String!, $repo: String!) {
               repository(owner: $owner, name: $repo) {
@@ -80,6 +81,7 @@ jobs:
                   target { oid }
                 }
                 issues(first: 50, states: OPEN) {
+                  pageInfo { hasNextPage }
                   nodes {
                     number
                     title
@@ -88,6 +90,7 @@ jobs:
                     createdAt
                     updatedAt
                     comments(first: 100) {
+                      pageInfo { hasNextPage }
                       nodes {
                         author { login }
                         body
@@ -97,6 +100,7 @@ jobs:
                   }
                 }
                 pullRequests(first: 50, states: OPEN) {
+                  pageInfo { hasNextPage }
                   nodes {
                     number
                     title
@@ -109,6 +113,7 @@ jobs:
                     createdAt
                     updatedAt
                     reviews(first: 50) {
+                      pageInfo { hasNextPage }
                       nodes {
                         author { login }
                         state
@@ -118,6 +123,7 @@ jobs:
                       }
                     }
                     comments(first: 100) {
+                      pageInfo { hasNextPage }
                       nodes {
                         author { login }
                         body
@@ -125,9 +131,11 @@ jobs:
                       }
                     }
                     reviewThreads(first: 50) {
+                      pageInfo { hasNextPage }
                       nodes {
                         isResolved
                         comments(first: 50) {
+                          pageInfo { hasNextPage }
                           nodes {
                             author { login }
                             body
@@ -142,8 +150,34 @@ jobs:
                 }
               }
             }
-          ' > "$RUNNER_TEMP/github-durable-state.json"
-          echo "Durable state snapshot: $(wc -c < "$RUNNER_TEMP/github-durable-state.json") bytes"
+          ' > "$snapshotPath"
+
+          # Fail closed if any collection was truncated (pagination boundary).
+          node -e '
+            const fs = require("fs");
+            const d = JSON.parse(fs.readFileSync(process.env.SNAPSHOT_PATH, "utf8"));
+            const truncated = [];
+            function checkPageInfo(obj, path) {
+              if (!obj || typeof obj !== "object") return;
+              if (obj.pageInfo && obj.pageInfo.hasNextPage === true) {
+                truncated.push(path);
+              }
+              for (const [k, v] of Object.entries(obj)) {
+                if (Array.isArray(v)) {
+                  v.forEach((item, idx) => checkPageInfo(item, `${path}.${k}[${idx}]`));
+                } else if (typeof v === "object") {
+                  checkPageInfo(v, `${path}.${k}`);
+                }
+              }
+            }
+            checkPageInfo(d.data, "data");
+            if (truncated.length > 0) {
+              console.error("Durable state truncated, failing closed:", truncated.join(", "));
+              process.exit(1);
+            }
+          '
+        env:
+          SNAPSHOT_PATH: ${{ runner.temp }}/github-durable-state.json
 
       # Stage 1: Coder discover target (bounded).
       # Native write-access admission is performed inside the Codex Action before
@@ -165,9 +199,10 @@ jobs:
         id: classify
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          MANIFEST_PATH: ${{ runner.temp }}/event-watch-manifest.json
         run: |
           set -euo pipefail
-          outcome="$(node -e "try{console.log(require('$RUNNER_TEMP/event-watch-manifest.json').outcome||'NO_WORK')}catch(e){console.log('NO_WORK')}")"
+          outcome="$(node -e "try{console.log(require(process.env.MANIFEST_PATH).outcome||'NO_WORK')}catch(e){console.log('NO_WORK')}")"
           case "$outcome" in
             NO_WORK|PROPOSAL|ESCALATION)
               echo "value=$outcome" >> "$GITHUB_OUTPUT"
@@ -179,9 +214,10 @@ jobs:
           esac
 
           if [ "$outcome" = "PROPOSAL" ]; then
-            targetBranch="$(node -e "console.log(require('$RUNNER_TEMP/event-watch-manifest.json').targetBranch||'')")"
-            expectedHeadSha="$(node -e "console.log(require('$RUNNER_TEMP/event-watch-manifest.json').expectedHeadSha||'')")"
-            expectedBaseSha="$(node -e "console.log(require('$RUNNER_TEMP/event-watch-manifest.json').expectedBaseSha||'')")"
+            targetBranch="$(node -e "console.log(require(process.env.MANIFEST_PATH).targetBranch||'')")"
+            targetPR="$(node -e "console.log(require(process.env.MANIFEST_PATH).targetPR||'')")"
+            expectedHeadSha="$(node -e "console.log(require(process.env.MANIFEST_PATH).expectedHeadSha||'')")"
+            expectedBaseSha="$(node -e "console.log(require(process.env.MANIFEST_PATH).expectedBaseSha||'')")"
 
             # Fail closed if targetBranch is empty or matches default branch
             if [ -z "$targetBranch" ] || [ "$targetBranch" = "$DEFAULT_BRANCH" ]; then
@@ -189,13 +225,20 @@ jobs:
               exit 1
             fi
 
-            if [ -n "$expectedHeadSha" ]; then
-              # Resuming existing target branch at exact head
+            # Resuming existing PR/branch requires concrete expectedHeadSha
+            if [ -n "$targetPR" ] || git rev-parse --verify --quiet "refs/remotes/origin/$targetBranch" >/dev/null; then
+              if [ -z "$expectedHeadSha" ] || ! node -e "if (!/^[0-9a-f]{40}$/.test('$expectedHeadSha')) process.exit(1);"; then
+                echo "Error: resuming existing branch/PR requires a valid 40-hex expectedHeadSha"
+                exit 1
+              fi
               git checkout -B "$targetBranch" "$expectedHeadSha"
             else
-              # New branch starting from expected base
-              base="${expectedBaseSha:-HEAD}"
-              git checkout -B "$targetBranch" "$base"
+              # New branch requires concrete expectedBaseSha
+              if [ -z "$expectedBaseSha" ] || ! node -e "if (!/^[0-9a-f]{40}$/.test('$expectedBaseSha')) process.exit(1);"; then
+                echo "Error: new branch requires a valid 40-hex expectedBaseSha"
+                exit 1
+              fi
+              git checkout -B "$targetBranch" "$expectedBaseSha"
             fi
           fi
 
@@ -210,12 +253,12 @@ jobs:
           permission-profile: :workspace
           working-directory: ${{ github.workspace }}
 
-      # Stage 4: Capture workspace patch into $RUNNER_TEMP and verify no runtime artifacts.
+      # Stage 4: Capture workspace patch into $RUNNER_TEMP (fails closed, no || true).
       - name: Capture workspace patch
         if: steps.classify.outputs.value == 'PROPOSAL'
         run: |
           set -euo pipefail
-          git add -N . 2>/dev/null || true
+          git add -N .
           git diff --binary HEAD > "$RUNNER_TEMP/event-watch.patch"
           # Regression check: verify runtime artifacts cannot appear in patch
           if grep -q -E "github-durable-state|event-watch-manifest" "$RUNNER_TEMP/event-watch.patch"; then
@@ -245,6 +288,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      MANIFEST_PATH: ${{ runner.temp }}/event-watch-manifest.json
     steps:
       - name: Checkout trusted default branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -285,8 +329,6 @@ jobs:
               }
             }
           '
-        env:
-          MANIFEST_PATH: ${{ runner.temp }}/event-watch-manifest.json
 
       - name: Configure bot identity
         run: |
@@ -296,13 +338,12 @@ jobs:
       - name: Persist bounded outcome
         run: |
           set -euo pipefail
-          manifestPath="${{ runner.temp }}/event-watch-manifest.json"
-          outcome="$(node -e "console.log(require('$manifestPath').outcome)")"
+          outcome="$(node -e "console.log(require(process.env.MANIFEST_PATH).outcome)")"
 
           if [ "$outcome" = "ESCALATION" ]; then
-            targetType="$(node -e "console.log(require('$manifestPath').workTargetType)")"
-            targetNumber="$(node -e "console.log(require('$manifestPath').workTargetNumber)")"
-            summary="$(node -e "console.log(require('$manifestPath').summary||'Handoff Go ESCALATION')")"
+            targetType="$(node -e "console.log(require(process.env.MANIFEST_PATH).workTargetType)")"
+            targetNumber="$(node -e "console.log(require(process.env.MANIFEST_PATH).workTargetNumber)")"
+            summary="$(node -e "console.log(require(process.env.MANIFEST_PATH).summary||'Handoff Go ESCALATION')")"
 
             if [ "$targetType" = "issue" ]; then
               gh issue comment "$targetNumber" --body "Handoff Go ESCALATION: $summary"
@@ -316,18 +357,23 @@ jobs:
           fi
 
           # PROPOSAL persistence
-          targetBranch="$(node -e "console.log(require('$manifestPath').targetBranch)")"
-          targetPR="$(node -e "console.log(require('$manifestPath').targetPR||'')")"
-          expectedHeadSha="$(node -e "console.log(require('$manifestPath').expectedHeadSha||'')")"
-          expectedBaseSha="$(node -e "console.log(require('$manifestPath').expectedBaseSha||'')")"
-          summary="$(node -e "console.log(require('$manifestPath').summary||'Handoff Go Coder Event Watch proposal')")"
+          targetBranch="$(node -e "console.log(require(process.env.MANIFEST_PATH).targetBranch)")"
+          targetPR="$(node -e "console.log(require(process.env.MANIFEST_PATH).targetPR||'')")"
+          expectedHeadSha="$(node -e "console.log(require(process.env.MANIFEST_PATH).expectedHeadSha||'')")"
+          expectedBaseSha="$(node -e "console.log(require(process.env.MANIFEST_PATH).expectedBaseSha||'')")"
+          summary="$(node -e "console.log(require(process.env.MANIFEST_PATH).summary||'Handoff Go Coder Event Watch proposal')")"
           patchFile="${{ runner.temp }}/event-watch.patch"
 
           # Fetch remote branches to validate current remote state against manifest
           git fetch origin '+refs/heads/*:refs/remotes/origin/*'
 
           if [ -n "$targetPR" ]; then
-            # Resuming existing PR: validate remote PR state
+            # Resuming existing PR: requires expectedHeadSha and validates remote PR state
+            if [ -z "$expectedHeadSha" ]; then
+              echo "Error: target PR #$targetPR requires concrete expectedHeadSha"
+              exit 1
+            fi
+
             prInfo="$(gh pr view "$targetPR" --json state,headRefName,headRefOid)"
             prState="$(node -e "console.log(JSON.parse(process.argv[1]).state)" "$prInfo")"
             prBranch="$(node -e "console.log(JSON.parse(process.argv[1]).headRefName)" "$prInfo")"
@@ -341,7 +387,7 @@ jobs:
               echo "Error: target PR #$targetPR branch is '$prBranch', expected '$targetBranch'"
               exit 1
             fi
-            if [ -n "$expectedHeadSha" ] && [ "$prHeadOid" != "$expectedHeadSha" ]; then
+            if [ "$prHeadOid" != "$expectedHeadSha" ]; then
               echo "Error: target PR #$targetPR head moved: expected $expectedHeadSha, current $prHeadOid"
               exit 1
             fi
@@ -349,17 +395,26 @@ jobs:
             # Fast-forward safe checkout at exact remote head
             git checkout -B "$targetBranch" "origin/$targetBranch"
           else
-            # New branch or branch without existing PR
+            # Branch without existing PR
             if git rev-parse --verify --quiet "refs/remotes/origin/$targetBranch" >/dev/null; then
+              # Resuming existing remote branch: requires expectedHeadSha
+              if [ -z "$expectedHeadSha" ]; then
+                echo "Error: existing remote branch $targetBranch requires concrete expectedHeadSha"
+                exit 1
+              fi
               remoteSha="$(git rev-parse "refs/remotes/origin/$targetBranch")"
-              if [ -n "$expectedHeadSha" ] && [ "$remoteSha" != "$expectedHeadSha" ]; then
+              if [ "$remoteSha" != "$expectedHeadSha" ]; then
                 echo "Error: remote branch $targetBranch head moved: expected $expectedHeadSha, current $remoteSha"
                 exit 1
               fi
               git checkout -B "$targetBranch" "origin/$targetBranch"
             else
-              base="${expectedBaseSha:-origin/$DEFAULT_BRANCH}"
-              git checkout -B "$targetBranch" "$base"
+              # New branch: requires expectedBaseSha
+              if [ -z "$expectedBaseSha" ]; then
+                echo "Error: new branch requires concrete expectedBaseSha"
+                exit 1
+              fi
+              git checkout -B "$targetBranch" "$expectedBaseSha"
             fi
           fi
 
