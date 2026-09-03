@@ -89,25 +89,33 @@ exits. The event payload is a wake signal only, never authority.
   spend model tokens. No separate shell gate.
 - **Authority split:** a `coder-reason` job runs Codex with no GitHub write
   credential exposed (`persist-credentials: false`, read-only perms). It
-  discovers the exact work target, prepares the workspace on that exact target
-  head, implements the bounded transition, and emits a structured manifest and
+  discovers the exact work target, verifies trusted governance immutability on
+  the target head, preserves the trusted implement prompt before checkout,
+  prepares the workspace on the exact target head, implements the bounded
+  transition, and emits a structured manifest, implementation result, and
   workspace patch into `$RUNNER_TEMP` (outside the workspace tree). A
   `coder-persist` job (no model key, narrow write permissions) validates and
   applies the bounded result — fast-forward push/PR or routing evidence.
 - **Complete discovery:** `coder-reason` holds read-only Issues/PRs permission
   and queries a complete structured durable-state snapshot
   (`$RUNNER_TEMP/github-durable-state.json`) via GraphQL plus fetched refs,
-  failing closed if durable-state reads fail.
-- **Bounded manifest:** Codex emits a structured manifest (`output-schema-file`)
-  containing `outcome` + discovered work target + target branch/PR + expected
-  head/base SHA; `coder-persist` validates it and remote PR/branch state against
-  the current head before mutating GitHub. Persistence targets the
-  **discovered** work, never the wake event.
+  failing closed if durable-state reads fail or pagination is truncated.
+- **Trusted governance immutability:** before the fresh implement run,
+  `coder-reason` verifies that the target head does not add/modify root
+  `AGENTS.override.md`, root `AGENTS.md`, the dynamically resolved `Skill:`
+  directory from the trusted bootstrap, or `.codex/` configuration.
+- **Post-implementation Security Gate:** the second Codex invocation outputs a
+  structured implementation result (`handoff-go-event-watch-implement-schema.json`).
+  Only an observed `SECURITY_PREFLIGHT: PASS` may proceed to proposal persistence.
+  `SECURITY_BLOCKED` routes canonically to Architect without applying/pushing
+  the patch. Missing or unobserved evidence fails closed; no fallback evidence
+  is ever fabricated.
 - **Resumable safe persistence:** `coder-persist` configures a bot identity,
   passes `GH_TOKEN` only there, prohibits mutating the default branch, verifies
-  open `targetPR` head matches `expectedHeadSha`, fails closed on a
-  stale/conflicting patch (`git apply --check`), fast-forward pushes to the
-  discovered `targetBranch`, and never swallows a material persistence failure.
+  stale-base for new branches and `expectedHeadSha` for existing PRs/branches,
+  fails closed on a stale/conflicting patch (`git apply --check`), fast-forward
+  pushes to the discovered `targetBranch`, and never swallows a material
+  persistence failure.
 - **Concurrency:** GitHub-native `concurrency` group
   (`handoff-go-coder-event-watch`); no lock database or scheduler service.
 - **Trusted checkout** of the repository default branch; no `pull_request_target`.

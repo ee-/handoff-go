@@ -10,16 +10,24 @@ Coder Event Watch (repository-level wake), OpenAI Codex reference:
 - two-job authority split: `coder-reason` (Codex, no GitHub write credential,
   read-only, `persist-credentials: false`) runs canonical full Coder discovery
   from a complete structured GraphQL snapshot (`$RUNNER_TEMP/github-durable-state.json`)
-  plus fetched refs, prepares the workspace on the exact target head, implements
-  changes, and captures the bounded manifest and patch into `$RUNNER_TEMP`
-  (outside the workspace tree);
+  plus fetched refs, verifies trusted governance immutability on target head
+  (root `AGENTS.md`, `AGENTS.override.md`, dynamically resolved `Skill:` directory,
+  and `.codex/`), preserves trusted implement prompt before checkout, implements
+  changes, and captures the bounded manifest, implementation result, and patch
+  into `$RUNNER_TEMP` (outside the workspace tree);
+- post-implementation Security Gate controls persistence: second Codex outputs
+  structured implementation result (`handoff-go-event-watch-implement-schema.json`),
+  requiring observed `SECURITY_PREFLIGHT: PASS` to proceed to proposal persistence;
+  `SECURITY_BLOCKED` routes canonically without applying/pushing patch; unobserved
+  evidence fallback removed (fails closed);
 - native Codex Action write-access admission (via `${{ github.token }}`), no
   separate shell gate; bounded artifact handoff between jobs;
 - persistence targets the **discovered** work (never the wake event), uses a bot
   identity + `GH_TOKEN` only in persist, prohibits mutating the default branch,
-  validates remote `targetPR`/branch head matches `expectedHeadSha`, fails closed
-  on a stale patch (`git apply --check`) or API failure, and fast-forward pushes
-  updates to the target branch;
+  stale-guards new branch base against current default branch, validates remote
+  `targetPR`/branch head matches `expectedHeadSha`, fails closed on a stale patch
+  (`git apply --check`) or API failure, and fast-forward pushes updates to the
+  target branch;
 - wake-aftering events, GitHub-native concurrency, trusted-default checkout,
   finite timeout, standard `GITHUB_TOKEN`;
 - canonical wake-only Codex prompt (`.github/codex/handoff-go-coder-event-watch-prompt.md`);

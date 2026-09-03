@@ -284,11 +284,20 @@ def main() -> None:
           "Event Watch persist job must not swallow a patch-apply failure")
     check("skills/handoff-go" in reason_part and "AGENTS.md" in reason_part,
           "Event Watch reason job must verify trusted governance immutability on target head")
+    check("AGENTS.override.md" in reason_part,
+          "Event Watch reason job must check AGENTS.override.md immutability")
+    check("trustedSkillDir" in reason_part,
+          "Event Watch reason job must dynamically resolve Skill path from bootstrap")
     check("READY_FOR_REVIEW" in persist_part and "Next Actor: ARCHITECT" in persist_part,
           "Event Watch persist job must persist canonical routing to Architect")
     check("stale base" in reason_part and "stale base" in persist_part,
           "Event Watch must stale-guard new branch base in both reason and persist")
-
+    check(Path(".github/codex/handoff-go-event-watch-implement-schema.json").is_file(),
+          "Event Watch implement schema file missing")
+    check("SECURITY_PREFLIGHT: PASS" in persist_part and "SECURITY_BLOCKED" in persist_part,
+          "Event Watch persist job must let implementation Security Gate control persistence")
+    check("unobserved evidence" in persist_part.lower(),
+          "Event Watch persist job must fail closed on unobserved security evidence")
     # All third-party Actions across workflows must be pinned to a full commit SHA.
     for wf in (ROOT / ".github/workflows").glob("*.yml"):
         wf_text = wf.read_text(encoding="utf-8")

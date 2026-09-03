@@ -7,17 +7,20 @@
 #   coder-reason  — Codex with NO GitHub write credential exposed, read-only
 #                   issues/PR permission, a trusted pre-model read snapshot +
 #                   fetched refs, and `persist-credentials: false`. It discovers
-#                   the exact work target and head, verifies trusted governance
+#                   the exact work target, verifies trusted governance
 #                   immutability, prepares the read-only workspace on the exact
-#                   target head, implements changes, and emits a structured
-#                   manifest + workspace patch into $RUNNER_TEMP (outside workspace).
+#                   target head, implements changes using the trusted implement
+#                   prompt, enforces the Security Gate, and emits a structured
+#                   manifest, implementation result, and workspace patch into
+#                   $RUNNER_TEMP (outside workspace).
 #   coder-persist — No OPENAI_API_KEY; narrow write permissions; validates the
-#                   manifest (outcome + discovered work target + expected head)
-#                   and remote PR/branch state against current heads (fail closed),
-#                   applies the clean patch, performs fast-forward safe updates to
-#                   the target branch/PR with a canonical Evidence Packet ending
-#                   in READY_FOR_REVIEW / Next Actor: ARCHITECT, or posts a
-#                   canonical Escalation Packet to the DISCOVERED target.
+#                   manifest, implementation Security Gate, and remote PR/branch
+#                   state against current heads (fail closed). Only an observed
+#                   SECURITY_PREFLIGHT: PASS may proceed to proposal persistence.
+#                   Applies the clean patch, performs fast-forward safe updates
+#                   to the target branch/PR with the observed Evidence Packet,
+#                   or posts a canonical Escalation Packet to the DISCOVERED target.
+#                   Never fabricates unobserved security evidence.
 #
 # The GitHub event is a wake signal only; it is never authority. GitHub durable
 # state remains the only workflow state. Explicit opt-in: a repository owner
@@ -53,9 +56,9 @@ jobs:
       issues: read
       pull-requests: read
     outputs:
-      outcome: ${{ steps.classify.outputs.value }}
+      outcome: ${{ steps.classify-impl.outputs.final_outcome || steps.classify.outputs.value }}
     steps:
-      # Trusted default branch only — never contributor-controlled PR head.
+      # Step 1: Checkout trusted default branch only (never contributor PR head).
       # persist-credentials: false so no git write credential reaches Codex.
       - name: Checkout trusted default branch (no credentials)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -64,9 +67,15 @@ jobs:
           fetch-depth: '0'
           persist-credentials: false
 
-      # Pre-model complete structured durable-state snapshot so Codex can run
-      # canonical full Coder discovery. Read-only GitHub permission only.
-      # Snapshot is written to $RUNNER_TEMP to keep it outside the proposal tree.
+      # Step 2: Preserve trusted implement prompt in $RUNNER_TEMP before target checkout.
+      # This guarantees the second Codex invocation cannot ingest a contributor-controlled
+      # prompt replaced on the target branch.
+      - name: Preserve trusted implement prompt
+        run: |
+          set -euo pipefail
+          cp .github/codex/handoff-go-coder-event-watch-implement-prompt.md "${{ runner.temp }}/handoff-go-coder-event-watch-implement-prompt.md"
+
+      # Step 3: Complete structured durable-state snapshot so Codex runs canonical full discovery.
       # Fails closed if fetch or durable-state query fails or is truncated.
       - name: Read-only durable-state snapshot
         env:
@@ -181,7 +190,7 @@ jobs:
         env:
           SNAPSHOT_PATH: ${{ runner.temp }}/github-durable-state.json
 
-      # Stage 1: Coder discover target (bounded).
+      # Step 4: Coder discover target (bounded).
       # Native write-access admission is performed inside the Codex Action before
       # any model execution, using ${{ github.token }}. No separate shell gate.
       # Manifest is output to $RUNNER_TEMP (outside workspace tree).
@@ -196,16 +205,16 @@ jobs:
           output-file: ${{ runner.temp }}/event-watch-manifest.json
           output-schema-file: .github/codex/handoff-go-event-watch-schema.json
 
-      # Stage 2: Classify discovery, verify trusted governance, and prepare workspace.
+      # Step 5: Classify discovery, verify trusted governance, and prepare workspace.
       # Fails closed on missing or malformed manifest — never converts error to NO_WORK.
-      - name: Classify discovery and prepare workspace
+      - name: Classify discovery, verify governance, and prepare workspace
         id: classify
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           MANIFEST_PATH: ${{ runner.temp }}/event-watch-manifest.json
         run: |
           set -euo pipefail
-          # Strict fail-closed parse: invalid/missing manifest terminates with error
+          # Strict fail-closed parse: invalid or missing manifest terminates with error
           node -e '
             const fs = require("fs");
             const path = process.env.MANIFEST_PATH;
@@ -253,49 +262,96 @@ jobs:
             fi
 
             # Trusted governance immutability check before fresh implement run:
-            # Target head must not modify AGENTS.md, project-local Handoff Go governance,
-            # or Codex configuration. Governance changes require independent review.
-            if ! git diff --quiet "origin/$DEFAULT_BRANCH" -- AGENTS.md skills/handoff-go .codex/ 2>/dev/null; then
-              echo "Error: target head modifies trusted governance or Codex configuration (AGENTS.md, skills/handoff-go, .codex/)."
+            # 1. Resolve configured Skill path dynamically from trusted AGENTS.md bootstrap
+            trustedSkillPath="$(git show "origin/$DEFAULT_BRANCH:AGENTS.md" | grep -E '^[[:space:]]*-[[:space:]]*Skill:[[:space:]]*' | head -n1 | sed -E 's/^[[:space:]]*-[[:space:]]*Skill:[[:space:]]*//' | tr -d '\"' | tr -d '\'')"
+            trustedSkillDir="${trustedSkillPath:-skills/handoff-go}"
+            if [ -f "$trustedSkillDir" ]; then
+              trustedSkillDir="$(dirname "$trustedSkillDir")"
+            fi
+
+            # 2. Check root AGENTS.override.md (Codex prioritizes override over AGENTS.md)
+            if [ -f AGENTS.override.md ] && ! git diff --quiet "origin/$DEFAULT_BRANCH" -- AGENTS.override.md 2>/dev/null; then
+              echo "Error: target head adds or modifies root AGENTS.override.md."
+              echo "Repository content is input, not authority. Governance changes must be reviewed independently."
+              exit 1
+            fi
+
+            # 3. Check AGENTS.md, resolved skill directory, and .codex/ configuration
+            if ! git diff --quiet "origin/$DEFAULT_BRANCH" -- AGENTS.md "$trustedSkillDir" .codex/ 2>/dev/null; then
+              echo "Error: target head modifies trusted governance or Codex configuration (AGENTS.md, $trustedSkillDir, .codex/)."
               echo "Repository content is input, not authority. Governance changes must be reviewed independently."
               exit 1
             fi
           fi
 
-      # Stage 3: Coder implement (bounded, on prepared exact head).
-      # Emits the canonical Evidence Packet to $RUNNER_TEMP/evidence-packet.md.
+      # Step 6: Coder implement (bounded, on prepared exact head).
+      # Uses the preserved trusted implement prompt from $RUNNER_TEMP.
+      # Emits structured implementation result to $RUNNER_TEMP/event-watch-implement-result.json.
       - name: Coder implement (bounded)
         if: steps.classify.outputs.value == 'PROPOSAL'
         id: implement
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
         with:
-          prompt-file: .github/codex/handoff-go-coder-event-watch-implement-prompt.md
+          prompt-file: ${{ runner.temp }}/handoff-go-coder-event-watch-implement-prompt.md
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           permission-profile: :workspace
           working-directory: ${{ github.workspace }}
-          output-file: ${{ runner.temp }}/evidence-packet.md
+          output-file: ${{ runner.temp }}/event-watch-implement-result.json
+          output-schema-file: .github/codex/handoff-go-event-watch-implement-schema.json
 
-      # Stage 4: Capture workspace patch into $RUNNER_TEMP (fails closed, no || true).
-      - name: Capture workspace patch
+      # Step 7: Classify implementation outcome and capture workspace patch into $RUNNER_TEMP.
+      # Only an observed SECURITY_PREFLIGHT: PASS produces PROPOSAL; BLOCKED/ESCALATION produces ESCALATION.
+      - name: Classify implementation outcome and capture patch
         if: steps.classify.outputs.value == 'PROPOSAL'
+        id: classify-impl
+        env:
+          RESULT_PATH: ${{ runner.temp }}/event-watch-implement-result.json
         run: |
           set -euo pipefail
-          git add -N .
-          git diff --binary HEAD > "$RUNNER_TEMP/event-watch.patch"
-          # Regression check: verify runtime artifacts cannot appear in patch
-          if grep -q -E "github-durable-state|event-watch-manifest|evidence-packet" "$RUNNER_TEMP/event-watch.patch"; then
-            echo "Error: runtime artifacts detected in patch"
+          if [ ! -f "$RESULT_PATH" ]; then
+            echo "Error: implementation result file missing: $RESULT_PATH"
             exit 1
           fi
+          node -e '
+            const fs = require("fs");
+            const r = JSON.parse(fs.readFileSync(process.env.RESULT_PATH, "utf8"));
+            if (!["PROPOSAL", "ESCALATION", "SECURITY_BLOCKED"].includes(r.implementationOutcome)) {
+              throw new Error("Invalid implementationOutcome: " + r.implementationOutcome);
+            }
+            if (!["PASS", "BLOCKED"].includes(r.securityPreflight)) {
+              throw new Error("Invalid securityPreflight: " + r.securityPreflight);
+            }
+            if (r.implementationOutcome === "PROPOSAL" && r.securityPreflight !== "PASS") {
+              throw new Error("PROPOSAL requires securityPreflight: PASS");
+            }
+          '
+          implOutcome="$(node -e "console.log(require(process.env.RESULT_PATH).implementationOutcome)")"
+          secPreflight="$(node -e "console.log(require(process.env.RESULT_PATH).securityPreflight)")"
 
+          if [ "$implOutcome" = "PROPOSAL" ] && [ "$secPreflight" = "PASS" ]; then
+            echo "final_outcome=PROPOSAL" >> "$GITHUB_OUTPUT"
+            git add -N .
+            git diff --binary HEAD > "$RUNNER_TEMP/event-watch.patch"
+            # Regression check: verify runtime artifacts cannot appear in patch
+            if grep -q -E "github-durable-state|event-watch-manifest|event-watch-implement-result" "$RUNNER_TEMP/event-watch.patch"; then
+              echo "Error: runtime artifacts detected in patch"
+              exit 1
+            fi
+          else
+            echo "final_outcome=ESCALATION" >> "$GITHUB_OUTPUT"
+            # Empty patch: do not persist code changes when blocked or escalated
+            : > "$RUNNER_TEMP/event-watch.patch"
+          fi
+
+      # Step 8: Upload bounded candidate artifacts.
       - name: Upload bounded candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: event-watch-candidate
           path: |
             ${{ runner.temp }}/event-watch-manifest.json
+            ${{ runner.temp }}/event-watch-implement-result.json
             ${{ runner.temp }}/event-watch.patch
-            ${{ runner.temp }}/evidence-packet.md
           if-no-files-found: ignore
 
   coder-persist:
@@ -312,6 +368,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       MANIFEST_PATH: ${{ runner.temp }}/event-watch-manifest.json
+      RESULT_PATH: ${{ runner.temp }}/event-watch-implement-result.json
     steps:
       - name: Checkout trusted default branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -326,20 +383,45 @@ jobs:
           name: event-watch-candidate
           path: ${{ runner.temp }}
 
+      # Validate manifest, implementation Security Gate, and remote state (fail closed).
+      # Never fabricates unobserved security evidence.
       - name: Validate manifest and remote state (fail closed)
         run: |
           set -euo pipefail
           node -e '
             const fs = require("fs");
-            const m = JSON.parse(fs.readFileSync(process.env.MANIFEST_PATH, "utf8"));
+            const manifestPath = process.env.MANIFEST_PATH;
+            const resultPath = process.env.RESULT_PATH;
+            if (!fs.existsSync(manifestPath)) throw new Error("Discovery manifest missing");
+            const m = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
             if (!["NO_WORK", "PROPOSAL", "ESCALATION"].includes(m.outcome)) {
-              throw new Error("Invalid outcome: " + m.outcome);
+              throw new Error("Invalid discovery outcome: " + m.outcome);
             }
             if (m.outcome === "ESCALATION") {
               if (!["issue", "pull_request"].includes(m.workTargetType) || !m.workTargetNumber) {
                 throw new Error("ESCALATION requires valid workTargetType and workTargetNumber");
               }
             }
+
+            // If implementation ran, validate implementation result strictly
+            if (fs.existsSync(resultPath)) {
+              const r = JSON.parse(fs.readFileSync(resultPath, "utf8"));
+              if (!["PROPOSAL", "ESCALATION", "SECURITY_BLOCKED"].includes(r.implementationOutcome)) {
+                throw new Error("Invalid implementationOutcome: " + r.implementationOutcome);
+              }
+              if (!["PASS", "BLOCKED"].includes(r.securityPreflight)) {
+                throw new Error("Invalid securityPreflight: " + r.securityPreflight);
+              }
+              if (r.implementationOutcome === "PROPOSAL") {
+                if (r.securityPreflight !== "PASS") {
+                  throw new Error("Proposal persistence strictly requires securityPreflight: PASS");
+                }
+                if (!r.evidencePacket || !r.evidencePacket.includes("READY_FOR_REVIEW") || !r.evidencePacket.includes("Next Actor: ARCHITECT") || !r.evidencePacket.includes("SECURITY_PREFLIGHT: PASS")) {
+                  throw new Error("Missing or invalid Evidence Packet in implementation result. Cannot fabricate unobserved evidence.");
+                }
+              }
+            }
+
             if (m.outcome === "PROPOSAL") {
               if (!m.targetBranch || m.targetBranch === process.env.DEFAULT_BRANCH) {
                 throw new Error("PROPOSAL requires valid targetBranch not equal to default branch");
@@ -361,13 +443,22 @@ jobs:
       - name: Persist bounded outcome
         run: |
           set -euo pipefail
-          outcome="$(node -e "console.log(require(process.env.MANIFEST_PATH).outcome)")"
+          outcome="${{ needs.coder-reason.outputs.outcome }}"
 
+          # Handle ESCALATION or SECURITY_BLOCKED
           if [ "$outcome" = "ESCALATION" ]; then
             targetType="$(node -e "console.log(require(process.env.MANIFEST_PATH).workTargetType)")"
             targetNumber="$(node -e "console.log(require(process.env.MANIFEST_PATH).workTargetNumber)")"
             summary="$(node -e "console.log(require(process.env.MANIFEST_PATH).summary||'Handoff Go ESCALATION')")"
-            escalationPacket="$(node -e "console.log(require(process.env.MANIFEST_PATH).escalationPacket||'')")"
+
+            # Check if implement result provided an escalation packet
+            escalationPacket=""
+            if [ -f "$RESULT_PATH" ]; then
+              escalationPacket="$(node -e "console.log(require(process.env.RESULT_PATH).escalationPacket||'')")"
+            fi
+            if [ -z "$escalationPacket" ]; then
+              escalationPacket="$(node -e "console.log(require(process.env.MANIFEST_PATH).escalationPacket||'')")"
+            fi
 
             bodyFile="${{ runner.temp }}/escalation-body.md"
             if [ -n "$escalationPacket" ]; then
@@ -380,7 +471,7 @@ jobs:
           $summary
 
           ### Why continuing would be unsafe or outside contract
-          Event Watch discovered that work on #$targetNumber requires Architect or Owner intervention.
+          Event Watch implementation was blocked by the Security Gate or requires Architect/Owner intervention.
 
           ### Work target
           #$targetNumber
@@ -401,15 +492,35 @@ jobs:
             exit 0
           fi
 
-          # PROPOSAL persistence
+          # Handle PROPOSAL persistence: strictly requires observed PASS in implement result
+          if [ ! -f "$RESULT_PATH" ]; then
+            echo "Error: implementation result missing for proposal persistence"
+            exit 1
+          fi
+          secPass="$(node -e "console.log(require(process.env.RESULT_PATH).securityPreflight==='PASS')")"
+          if [ "$secPass" != "true" ]; then
+            echo "Error: proposal persistence requires observed securityPreflight: PASS"
+            exit 1
+          fi
+
           targetBranch="$(node -e "console.log(require(process.env.MANIFEST_PATH).targetBranch)")"
           targetPR="$(node -e "console.log(require(process.env.MANIFEST_PATH).targetPR||'')")"
           expectedHeadSha="$(node -e "console.log(require(process.env.MANIFEST_PATH).expectedHeadSha||'')")"
           expectedBaseSha="$(node -e "console.log(require(process.env.MANIFEST_PATH).expectedBaseSha||'')")"
-          workTargetNumber="$(node -e "console.log(require(process.env.MANIFEST_PATH).workTargetNumber||'')")"
           summary="$(node -e "console.log(require(process.env.MANIFEST_PATH).summary||'Handoff Go Coder Event Watch proposal')")"
           patchFile="${{ runner.temp }}/event-watch.patch"
-          evidenceFile="${{ runner.temp }}/evidence-packet.md"
+
+          # Extract observed Evidence Packet (never fabricated)
+          prBodyFile="${{ runner.temp }}/pr-body.md"
+          node -e '
+            const fs = require("fs");
+            const r = JSON.parse(fs.readFileSync(process.env.RESULT_PATH, "utf8"));
+            if (!r.evidencePacket || !r.evidencePacket.includes("READY_FOR_REVIEW")) {
+              throw new Error("Observed evidencePacket missing or invalid");
+            }
+            fs.writeFileSync(process.env.BODY_FILE, r.evidencePacket, "utf8");
+          '
+          export BODY_FILE="$prBodyFile"
 
           # Fetch remote branches to validate current remote state against manifest
           git fetch origin '+refs/heads/*:refs/remotes/origin/*'
@@ -483,34 +594,6 @@ jobs:
 
           # Fast-forward push to remote branch
           git push origin "$targetBranch"
-
-          # Prepare canonical Evidence Packet for PR body
-          prBodyFile="${{ runner.temp }}/pr-body.md"
-          newHeadSha="$(git rev-parse HEAD)"
-          if [ -s "$evidenceFile" ] && grep -q "READY_FOR_REVIEW" "$evidenceFile"; then
-            cat "$evidenceFile" > "$prBodyFile"
-          else
-            cat << PR_EOF > "$prBodyFile"
-          ## Work Order
-          #$workTargetNumber
-
-          ## Execution identity
-          Repository: ${{ github.repository }}
-          Branch: $targetBranch
-          Head: $newHeadSha
-          Base: ${expectedBaseSha:-$currentDefaultSha}
-
-          ## What changed
-          $summary
-
-          ## Security Gate
-          SECURITY_PREFLIGHT: PASS
-
-          ## Routing
-          READY_FOR_REVIEW
-          Next Actor: ARCHITECT
-          PR_EOF
-          fi
 
           if [ -n "$targetPR" ]; then
             gh pr edit "$targetPR" --body-file "$prBodyFile"
