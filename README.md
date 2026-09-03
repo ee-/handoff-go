@@ -17,13 +17,6 @@ Owner / Human
   -> Coder (Codex, Claude Code, OpenCode, Pi, Hermes, OMP, ...)
 ```
 
-GitHub objects are the protocol:
-
-```text
-Issue = Work Contract    PR = Evidence Packet    Merge = Promotion
-Comment = Decision / Escalation / Routing        Review = Acceptance
-```
-
 The human-facing command is ordinary text:
 
 ```text

@@ -16,11 +16,10 @@ PACKAGE = {
     SKILL_ROOT / "references/coder.md",
     SKILL_ROOT / "references/core.md",
     SKILL_ROOT / "watch.mjs",
-    SKILL_ROOT / "adapters/omp.mjs",
-    SKILL_ROOT / "adapters/pi.mjs",
+    SKILL_ROOT / "adapters/watch.mjs",
     SKILL_ROOT / "references/watch.md",
 }
-REQUIRED = PACKAGE | {
+REQUIRED = {
     Path(path)
     for path in (
         "README.md",
@@ -104,15 +103,13 @@ REQUIRED_TEXT = {
         "branches: [main]",
         "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     ),
-    SKILL_ROOT / "adapters/omp.mjs": (
+    SKILL_ROOT / "adapters/watch.mjs": (
         'deliverAs: "followUp"',
         "event.source === \"extension\"",
-        "return { handled: true }",
-    ),
-    SKILL_ROOT / "adapters/pi.mjs": (
-        'deliverAs: "followUp"',
-        "event.source === \"extension\"",
+        "parseWatchCommand",
+        "ctx?.setInterval",
         'action: "handled"',
+        "handled: true",
     ),
     SKILL_ROOT / "references/watch.md": (
         "go watch",
