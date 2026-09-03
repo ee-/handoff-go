@@ -304,8 +304,12 @@ def main() -> None:
           "Event Watch implement schema file missing")
     check("SECURITY_PREFLIGHT: PASS" in persist_part and "SECURITY_BLOCKED" in persist_part,
           "Event Watch persist job must let implementation Security Gate control persistence")
+    check("READY_FOR_REVIEW" in persist_part and "Next Actor: ARCHITECT" in persist_part,
+          "Event Watch persist job must persist canonical routing to Architect")
     check("export BODY_FILE" in persist_part and "fs.writeFileSync(process.env.BODY_FILE" in persist_part,
           "Event Watch persist job must export BODY_FILE before writing observed evidence")
+    check(persist_part.find("export BODY_FILE") < persist_part.find("fs.writeFileSync(process.env.BODY_FILE"),
+          "Event Watch persist job must export BODY_FILE before node writeFileSync")
     check("unobserved evidence" in persist_part.lower(),
           "Event Watch persist job must fail closed on unobserved security evidence")
     # Documentation must reflect public repository / pre-release status.
