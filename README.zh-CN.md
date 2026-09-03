@@ -54,9 +54,9 @@ go watch stop   # 停止 watch
 
 `go watch` 会先立刻执行一次正常的 Coder `go` discovery，然后按请求的间隔重复。它是 wake 机制，不是 workflow state；每次 tick 都会重新加载可信 governance 并重新发现 durable GitHub state。各 harness 使用其原生 scheduling/extension 能力（参见 `skills/handoff-go/references/watch.md`）。
 
-**Event Watch（v1.2）** 是 repository 级别的对应物：一个 durable GitHub state 事件唤醒一次全新的 Coder `go` 执行后退出（它绝不运行 `go watch`）。参考实现随仓库提供：`.github/workflows/handoff-go-coder-event-watch.yml`（OpenAI Codex，通过官方 Codex GitHub Action）。它是显式 opt-in——由 repository owner 主动启用；普通的 `$handoff-go setup` 不会开启它。
+**Event Watch（v1.2）** 是 repository 级别自动化的实验性参考实现：一个 durable GitHub state 事件唤醒一次全新的 Coder `go` 执行后退出（它绝不运行 `go watch`）。参考实现随仓库提供：`.github/workflows/handoff-go-coder-event-watch.yml`（OpenAI Codex，通过官方 Codex GitHub Action）。它属于显式 opt-in——由 repository owner 主动启用；日常正常的 Handoff Go 使用不需要它，普通的 `$handoff-go setup` 也不会开启它。
 
-本 repository 当前仍为 private，处于 pre-publication 阶段。从本地 checkout 也可以把路径直接传给 `npx skills add` 来安装同一个 skill。
+本 repository 目前已公开，但尚未发布首个正式版本 release。在发布首个 release tag 之前，可以从本地 checkout 把路径直接传给 `npx skills add` 来安装同一个 skill。
 
 ## 工作方式
 

@@ -33,10 +33,6 @@ on:
     types: [opened, edited, reopened]
   issue_comment:
     types: [created, edited]
-  pull_request_review:
-    types: [submitted]
-  pull_request_review_comment:
-    types: [created]
   workflow_dispatch:
 
 permissions:
@@ -67,13 +63,17 @@ jobs:
           fetch-depth: '0'
           persist-credentials: false
 
-      # Step 2: Preserve trusted implement prompt in $RUNNER_TEMP before target checkout.
-      # This guarantees the second Codex invocation cannot ingest a contributor-controlled
-      # prompt replaced on the target branch.
-      - name: Preserve trusted implement prompt
+      # Step 2: Preserve complete trusted Event Watch control bundle in $RUNNER_TEMP
+      # before any candidate checkout. Both Codex invocations consume these trusted copies.
+      - name: Preserve trusted Event Watch control bundle
         run: |
           set -euo pipefail
-          cp .github/codex/handoff-go-coder-event-watch-implement-prompt.md "${{ runner.temp }}/handoff-go-coder-event-watch-implement-prompt.md"
+          bundle_dir="${{ runner.temp }}/control-bundle"
+          mkdir -p "$bundle_dir"
+          cp .github/codex/handoff-go-coder-event-watch-prompt.md "$bundle_dir/handoff-go-coder-event-watch-prompt.md"
+          cp .github/codex/handoff-go-event-watch-schema.json "$bundle_dir/handoff-go-event-watch-schema.json"
+          cp .github/codex/handoff-go-coder-event-watch-implement-prompt.md "$bundle_dir/handoff-go-coder-event-watch-implement-prompt.md"
+          cp .github/codex/handoff-go-event-watch-implement-schema.json "$bundle_dir/handoff-go-event-watch-implement-schema.json"
 
       # Step 3: Complete structured durable-state snapshot so Codex runs canonical full discovery.
       # Fails closed if fetch or durable-state query fails or is truncated.
@@ -198,12 +198,12 @@ jobs:
         id: discover
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
         with:
-          prompt-file: .github/codex/handoff-go-coder-event-watch-prompt.md
+          prompt-file: ${{ runner.temp }}/control-bundle/handoff-go-coder-event-watch-prompt.md
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           permission-profile: :workspace
           working-directory: ${{ github.workspace }}
           output-file: ${{ runner.temp }}/event-watch-manifest.json
-          output-schema-file: .github/codex/handoff-go-event-watch-schema.json
+          output-schema-file: ${{ runner.temp }}/control-bundle/handoff-go-event-watch-schema.json
 
       # Step 5: Classify discovery, verify trusted governance, and prepare workspace.
       # Fails closed on missing or malformed manifest — never converts error to NO_WORK.
@@ -262,12 +262,49 @@ jobs:
             fi
 
             # Trusted governance immutability check before fresh implement run:
-            # 1. Resolve configured Skill path dynamically from trusted AGENTS.md bootstrap
-            trustedSkillPath="$(git show "origin/$DEFAULT_BRANCH:AGENTS.md" | grep -E '^[[:space:]]*-[[:space:]]*Skill:[[:space:]]*' | head -n1 | sed -E 's/^[[:space:]]*-[[:space:]]*Skill:[[:space:]]*//' | tr -d '\"' | tr -d '\'')"
-            trustedSkillDir="${trustedSkillPath:-skills/handoff-go}"
-            if [ -f "$trustedSkillDir" ]; then
-              trustedSkillDir="$(dirname "$trustedSkillDir")"
-            fi
+            # 1. Resolve configured Skill path dynamically from trusted AGENTS.md managed block
+            trustedSkillDir="$(node -e '
+              const path = require("path");
+              const content = process.argv[1];
+              const startMarker = "<!-- handoff-go:start -->";
+              const endMarker = "<!-- handoff-go:end -->";
+
+              const startCount = (content.match(new RegExp(startMarker, "g")) || []).length;
+              const endCount = (content.match(new RegExp(endMarker, "g")) || []).length;
+              if (startCount !== 1 || endCount !== 1) {
+                throw new Error(`Expected exactly one managed block, found start=${startCount} end=${endCount}`);
+              }
+              const s = content.indexOf(startMarker);
+              const e = content.indexOf(endMarker);
+              if (s === -1 || e === -1 || s >= e) {
+                throw new Error("Malformed or inverted managed block markers");
+              }
+              const block = content.slice(s + startMarker.length, e);
+
+              const skillMatches = [...block.matchAll(/^[ \t]*-[ \t]*Skill:[ \t]*(.+)$/gm)].map(m => m[1].trim().replace(/^[`"'\x27]+|[`"'\x27]+$/g, ""));
+              if (skillMatches.length !== 1) {
+                throw new Error(`Expected exactly one Skill entry in managed block, found ${skillMatches.length}`);
+              }
+              const skillPath = skillMatches[0];
+              if (!skillPath || path.isAbsolute(skillPath) || skillPath.includes("..") || skillPath.startsWith("/")) {
+                throw new Error(`Malformed or escaping Skill path: ${skillPath}`);
+              }
+
+              const refMatches = [...block.matchAll(/^[ \t]*-[ \t]*Immutable ref:[ \t]*(.+)$/gm)].map(m => m[1].trim());
+              if (refMatches.length !== 1) {
+                throw new Error(`Expected exactly one Immutable ref entry in managed block, found ${refMatches.length}`);
+              }
+              const immutableRef = refMatches[0];
+              if (!immutableRef) {
+                throw new Error("Empty Immutable ref in managed block");
+              }
+
+              let skillDir = skillPath;
+              if (skillPath.endsWith(".md") || skillPath.endsWith(".mjs") || skillPath.endsWith(".js")) {
+                skillDir = path.dirname(skillPath);
+              }
+              console.log(skillDir);
+            ' "$(git show "origin/$DEFAULT_BRANCH:AGENTS.md")")"
 
             # 2. Check root AGENTS.override.md (Codex prioritizes override over AGENTS.md)
             if [ -f AGENTS.override.md ] && ! git diff --quiet "origin/$DEFAULT_BRANCH" -- AGENTS.override.md 2>/dev/null; then
@@ -292,12 +329,12 @@ jobs:
         id: implement
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
         with:
-          prompt-file: ${{ runner.temp }}/handoff-go-coder-event-watch-implement-prompt.md
+          prompt-file: ${{ runner.temp }}/control-bundle/handoff-go-coder-event-watch-implement-prompt.md
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           permission-profile: :workspace
           working-directory: ${{ github.workspace }}
           output-file: ${{ runner.temp }}/event-watch-implement-result.json
-          output-schema-file: .github/codex/handoff-go-event-watch-implement-schema.json
+          output-schema-file: ${{ runner.temp }}/control-bundle/handoff-go-event-watch-implement-schema.json
 
       # Step 7: Classify implementation outcome and capture workspace patch into $RUNNER_TEMP.
       # Only an observed SECURITY_PREFLIGHT: PASS produces PROPOSAL; BLOCKED/ESCALATION produces ESCALATION.

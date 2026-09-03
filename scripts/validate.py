@@ -221,9 +221,10 @@ def main() -> None:
     check("concurrency:" in ew_text, "Event Watch must set a concurrency group")
     check("timeout-minutes:" in ew_text, "Event Watch must set a finite timeout")
     check("pull_request_target" not in ew_text, "Event Watch must not use pull_request_target")
+    check("pull_request_review" not in ew_text, "Event Watch must not trigger on pull_request_review")
+    check("pull_request_review_comment" not in ew_text, "Event Watch must not trigger on pull_request_review_comment")
     check("openai/codex-action@" in ew_text, "Event Watch must invoke the Codex GitHub Action")
     # Native write-access admission is done by the Codex Action (via github.token).
-    # There must be no divergent gh-permission shell gate.
     check("collaborators/" not in ew_text,
           "Event Watch must rely on the Codex Action native admission")
     # Two-job authority split: reason (no write cred) -> persist (write).
@@ -279,26 +280,49 @@ def main() -> None:
           "Event Watch reason job must enforce expectedHeadSha when resuming")
     check("git apply" in persist_part and "git apply event-watch.patch || true" not in persist_part,
           "Event Watch persist job must not swallow a patch-apply failure")
-    check("skills/handoff-go" in reason_part and "AGENTS.md" in reason_part,
+    check("trustedSkillDir" in reason_part and "AGENTS.md" in reason_part,
           "Event Watch reason job must verify trusted governance immutability on target head")
     check("AGENTS.override.md" in reason_part,
           "Event Watch reason job must check AGENTS.override.md immutability")
-    check("trustedSkillDir" in reason_part,
-          "Event Watch reason job must dynamically resolve Skill path from bootstrap")
-    check("READY_FOR_REVIEW" in persist_part and "Next Actor: ARCHITECT" in persist_part,
-          "Event Watch persist job must persist canonical routing to Architect")
+    check("<!-- handoff-go:start -->" in reason_part and "<!-- handoff-go:end -->" in reason_part,
+          "Event Watch reason job must parse Skill path strictly from managed block")
+    check("head -n1" not in reason_part,
+          "Event Watch must not use generic first-match Skill parsing")
+    check("control-bundle" in reason_part,
+          "Event Watch reason job must preserve complete control bundle in temp before candidate checkout")
+    check("control-bundle/handoff-go-coder-event-watch-prompt.md" in reason_part,
+          "Event Watch discover step must use trusted prompt copy")
+    check("control-bundle/handoff-go-event-watch-schema.json" in reason_part,
+          "Event Watch discover step must use trusted schema copy")
+    check("control-bundle/handoff-go-coder-event-watch-implement-prompt.md" in reason_part,
+          "Event Watch implement step must use trusted prompt copy")
+    check("control-bundle/handoff-go-event-watch-implement-schema.json" in reason_part,
+          "Event Watch implement step must use trusted schema copy")
     check("stale base" in reason_part and "stale base" in persist_part,
           "Event Watch must stale-guard new branch base in both reason and persist")
     check(Path(".github/codex/handoff-go-event-watch-implement-schema.json").is_file(),
           "Event Watch implement schema file missing")
     check("SECURITY_PREFLIGHT: PASS" in persist_part and "SECURITY_BLOCKED" in persist_part,
           "Event Watch persist job must let implementation Security Gate control persistence")
-    check("unobserved evidence" in persist_part.lower(),
-          "Event Watch persist job must fail closed on unobserved security evidence")
+    check("READY_FOR_REVIEW" in persist_part and "Next Actor: ARCHITECT" in persist_part,
+          "Event Watch persist job must persist canonical routing to Architect")
     check("export BODY_FILE" in persist_part and "fs.writeFileSync(process.env.BODY_FILE" in persist_part,
           "Event Watch persist job must export BODY_FILE before writing observed evidence")
     check(persist_part.find("export BODY_FILE") < persist_part.find("fs.writeFileSync(process.env.BODY_FILE"),
           "Event Watch persist job must export BODY_FILE before node writeFileSync")
+    check("unobserved evidence" in persist_part.lower(),
+          "Event Watch persist job must fail closed on unobserved security evidence")
+    # Documentation must reflect public repository / pre-release status.
+    readme = read(Path("README.md"))
+    check("currently private" not in readme and "remains private" not in readme,
+          "README must not claim repository is private")
+    check("is public" in readme, "README must state repository is public")
+    readme_zh = read(Path("README.zh-CN.md"))
+    check("当前仍为 private" not in readme_zh,
+          "README.zh-CN must not claim repository is private")
+    check("目前已公开" in readme_zh, "README.zh-CN must state repository is public")
+    check("explicit opt-in" in ew_text.lower() or "explicit opt-in" in read(SKILL_ROOT / "references/watch.md").lower(),
+          "Event Watch must remain explicit opt-in")
     # All third-party Actions across workflows must be pinned to a full commit SHA.
     for wf in (ROOT / ".github/workflows").glob("*.yml"):
         wf_text = wf.read_text(encoding="utf-8")
