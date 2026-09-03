@@ -88,22 +88,26 @@ exits. The event payload is a wake signal only, never authority.
   any model execution using `${{ github.token }}`; unauthorized actors never
   spend model tokens. No separate shell gate.
 - **Authority split:** a `coder-reason` job runs Codex with no GitHub write
-  credential exposed (`persist-credentials: false`, read-only) and produces a
-  bounded result (`NO_WORK` | `PROPOSAL` | `ESCALATION`) plus a workspace patch;
-  a `coder-persist` job (no model key, narrow write permissions) validates and
-  applies the bounded result — push/PR or routing evidence.
-- **Discovery:** `coder-reason` holds read-only Issues/PRs permission and builds
-  a trusted pre-model durable-state snapshot (`.codex/github-state.md`) plus
-  fetched refs, so Codex can run the canonical full Coder discovery.
+  credential exposed (`persist-credentials: false`, read-only perms). It
+  discovers the exact work target, prepares the workspace on that exact target
+  head, implements the bounded transition, and emits a structured manifest and
+  workspace patch into `$RUNNER_TEMP` (outside the workspace tree). A
+  `coder-persist` job (no model key, narrow write permissions) validates and
+  applies the bounded result — fast-forward push/PR or routing evidence.
+- **Complete discovery:** `coder-reason` holds read-only Issues/PRs permission
+  and queries a complete structured durable-state snapshot
+  (`$RUNNER_TEMP/github-durable-state.json`) via GraphQL plus fetched refs,
+  failing closed if durable-state reads fail.
 - **Bounded manifest:** Codex emits a structured manifest (`output-schema-file`)
   containing `outcome` + discovered work target + target branch/PR + expected
-  head/base SHA; `coder-persist` validates it against the current head before
-  mutating GitHub. Persistence targets the **discovered** work, never the wake
-  event.
-- **Safe persistence:** `coder-persist` configures a bot identity, passes
-  `GH_TOKEN` only there, fails closed on a stale/conflicting patch
-  (`git apply --check`), creates/updates the discovered branch/PR (idempotent),
-  and never swallows a material persistence failure.
+  head/base SHA; `coder-persist` validates it and remote PR/branch state against
+  the current head before mutating GitHub. Persistence targets the
+  **discovered** work, never the wake event.
+- **Resumable safe persistence:** `coder-persist` configures a bot identity,
+  passes `GH_TOKEN` only there, prohibits mutating the default branch, verifies
+  open `targetPR` head matches `expectedHeadSha`, fails closed on a
+  stale/conflicting patch (`git apply --check`), fast-forward pushes to the
+  discovered `targetBranch`, and never swallows a material persistence failure.
 - **Concurrency:** GitHub-native `concurrency` group
   (`handoff-go-coder-event-watch`); no lock database or scheduler service.
 - **Trusted checkout** of the repository default branch; no `pull_request_target`.

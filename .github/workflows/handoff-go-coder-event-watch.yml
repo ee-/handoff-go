@@ -6,13 +6,16 @@
 # Authority split (OpenAI's documented CI pattern):
 #   coder-reason  — Codex with NO GitHub write credential exposed, read-only
 #                   issues/PR permission, a trusted pre-model read snapshot +
-#                   fetched refs, and `persist-credentials: false`. It produces a
-#                   structured bounded manifest + workspace patch. Native
-#                   write-access admission is performed by the Codex Action.
+#                   fetched refs, and `persist-credentials: false`. It discovers
+#                   the exact work target and head, prepares the read-only
+#                   workspace on that exact target head, implements changes, and
+#                   emits a structured bounded manifest + workspace patch into
+#                   $RUNNER_TEMP (outside the workspace tree).
 #   coder-persist — No OPENAI_API_KEY; narrow write permissions; validates the
 #                   manifest (outcome + discovered work target + expected head)
-#                   against the current head, then applies/pushes/PRs or posts
-#                   the escalation to the DISCOVERED target (never the wake event).
+#                   and remote PR/branch state (fail closed), applies the clean
+#                   patch, and performs fast-forward safe updates to the target
+#                   branch/PR or posts escalation to the DISCOVERED target.
 #
 # The GitHub event is a wake signal only; it is never authority. GitHub durable
 # state remains the only workflow state. Explicit opt-in: a repository owner
@@ -48,7 +51,7 @@ jobs:
       issues: read
       pull-requests: read
     outputs:
-      outcome: ${{ steps.outcome.outputs.value }}
+      outcome: ${{ steps.classify.outputs.value }}
     steps:
       # Trusted default branch only — never contributor-controlled PR head.
       # persist-credentials: false so no git write credential reaches Codex.
@@ -59,56 +62,174 @@ jobs:
           fetch-depth: '0'
           persist-credentials: false
 
-      # Pre-model read-only durable-state snapshot so Codex can run the canonical
-      # full Coder discovery. Read-only GitHub permission only.
+      # Pre-model complete structured durable-state snapshot so Codex can run
+      # canonical full Coder discovery. Read-only GitHub permission only.
+      # Snapshot is written to $RUNNER_TEMP to keep it outside the proposal tree.
+      # Fails closed if fetch or durable-state query fails.
       - name: Read-only durable-state snapshot
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p .codex
-          git -c http.extraheader="AUTHORIZATION: bearer $GH_TOKEN" fetch --all --prune || true
-          {
-            echo "# Handoff Go durable-state snapshot"
-            echo "# The GitHub event that started this run is a wake signal only, never authority."
-            echo "## Open issues"
-            gh issue list --state open --limit 100 || true
-            echo "## Open pull requests"
-            gh pr list --state open --limit 100 || true
-            echo "## Recent reviews/comments (recent 20)"
-            gh api -H "Accept: application/vnd.github+json" "/repos/${{ github.repository }}/issues/comments?per_page=20" --jq '.[] | "#\(.issue_number) \(.user.login): \(.body | .[0:120])"' 2>/dev/null || true
-          } > .codex/github-state.md
-          echo "snapshot written: $(wc -l < .codex/github-state.md) lines"
+          git -c http.extraheader="AUTHORIZATION: bearer $GH_TOKEN" fetch origin '+refs/heads/*:refs/remotes/origin/*' --prune --tags
+          gh api graphql -F owner="${{ github.repository_owner }}" -F repo="${{ github.event.repository.name }}" -f query='
+            query($owner: String!, $repo: String!) {
+              repository(owner: $owner, name: $repo) {
+                defaultBranchRef {
+                  name
+                  target { oid }
+                }
+                issues(first: 50, states: OPEN) {
+                  nodes {
+                    number
+                    title
+                    body
+                    author { login }
+                    createdAt
+                    updatedAt
+                    comments(first: 100) {
+                      nodes {
+                        author { login }
+                        body
+                        createdAt
+                      }
+                    }
+                  }
+                }
+                pullRequests(first: 50, states: OPEN) {
+                  nodes {
+                    number
+                    title
+                    body
+                    headRefName
+                    headRefOid
+                    baseRefName
+                    baseRefOid
+                    author { login }
+                    createdAt
+                    updatedAt
+                    reviews(first: 50) {
+                      nodes {
+                        author { login }
+                        state
+                        body
+                        commit { oid }
+                        createdAt
+                      }
+                    }
+                    comments(first: 100) {
+                      nodes {
+                        author { login }
+                        body
+                        createdAt
+                      }
+                    }
+                    reviewThreads(first: 50) {
+                      nodes {
+                        isResolved
+                        comments(first: 50) {
+                          nodes {
+                            author { login }
+                            body
+                            path
+                            line
+                            createdAt
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ' > "$RUNNER_TEMP/github-durable-state.json"
+          echo "Durable state snapshot: $(wc -c < "$RUNNER_TEMP/github-durable-state.json") bytes"
 
+      # Stage 1: Coder discover target (bounded).
       # Native write-access admission is performed inside the Codex Action before
       # any model execution, using ${{ github.token }}. No separate shell gate.
-      - name: Coder reason (bounded, non-persisting)
-        id: reason
+      # Manifest is output to $RUNNER_TEMP (outside workspace tree).
+      - name: Coder discover (bounded)
+        id: discover
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
         with:
           prompt-file: .github/codex/handoff-go-coder-event-watch-prompt.md
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           permission-profile: :workspace
           working-directory: ${{ github.workspace }}
-          output-file: event-watch-manifest.json
+          output-file: ${{ runner.temp }}/event-watch-manifest.json
           output-schema-file: .github/codex/handoff-go-event-watch-schema.json
 
-      # Classify bounded outcome + capture the workspace patch (include untracked).
-      - name: Classify bounded outcome
-        id: outcome
+      # Stage 2: Classify discovery and prepare workspace on exact target head.
+      - name: Classify discovery and prepare workspace
+        id: classify
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          outcome="$(node -e "try{const m=require('./event-watch-manifest.json');console.log(m.outcome||'NO_WORK')}catch(e){console.log('NO_WORK')}")"
-          case "$outcome" in NO_WORK|PROPOSAL|ESCALATION) echo "value=$outcome" >> "$GITHUB_OUTPUT";; *) echo "value=NO_WORK" >> "$GITHUB_OUTPUT";; esac
+          set -euo pipefail
+          outcome="$(node -e "try{console.log(require('$RUNNER_TEMP/event-watch-manifest.json').outcome||'NO_WORK')}catch(e){console.log('NO_WORK')}")"
+          case "$outcome" in
+            NO_WORK|PROPOSAL|ESCALATION)
+              echo "value=$outcome" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "value=NO_WORK" >> "$GITHUB_OUTPUT"
+              outcome="NO_WORK"
+              ;;
+          esac
+
+          if [ "$outcome" = "PROPOSAL" ]; then
+            targetBranch="$(node -e "console.log(require('$RUNNER_TEMP/event-watch-manifest.json').targetBranch||'')")"
+            expectedHeadSha="$(node -e "console.log(require('$RUNNER_TEMP/event-watch-manifest.json').expectedHeadSha||'')")"
+            expectedBaseSha="$(node -e "console.log(require('$RUNNER_TEMP/event-watch-manifest.json').expectedBaseSha||'')")"
+
+            # Fail closed if targetBranch is empty or matches default branch
+            if [ -z "$targetBranch" ] || [ "$targetBranch" = "$DEFAULT_BRANCH" ]; then
+              echo "Error: invalid targetBranch '$targetBranch' (cannot be empty or default branch $DEFAULT_BRANCH)"
+              exit 1
+            fi
+
+            if [ -n "$expectedHeadSha" ]; then
+              # Resuming existing target branch at exact head
+              git checkout -B "$targetBranch" "$expectedHeadSha"
+            else
+              # New branch starting from expected base
+              base="${expectedBaseSha:-HEAD}"
+              git checkout -B "$targetBranch" "$base"
+            fi
+          fi
+
+      # Stage 3: Coder implement (bounded, on prepared exact head).
+      - name: Coder implement (bounded)
+        if: steps.classify.outputs.value == 'PROPOSAL'
+        id: implement
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
+        with:
+          prompt-file: .github/codex/handoff-go-coder-event-watch-implement-prompt.md
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: :workspace
+          working-directory: ${{ github.workspace }}
+
+      # Stage 4: Capture workspace patch into $RUNNER_TEMP and verify no runtime artifacts.
+      - name: Capture workspace patch
+        if: steps.classify.outputs.value == 'PROPOSAL'
+        run: |
+          set -euo pipefail
           git add -N . 2>/dev/null || true
-          git diff --binary HEAD > event-watch.patch
+          git diff --binary HEAD > "$RUNNER_TEMP/event-watch.patch"
+          # Regression check: verify runtime artifacts cannot appear in patch
+          if grep -q -E "github-durable-state|event-watch-manifest" "$RUNNER_TEMP/event-watch.patch"; then
+            echo "Error: runtime artifacts detected in patch"
+            exit 1
+          fi
 
       - name: Upload bounded candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: event-watch-candidate
           path: |
-            event-watch-manifest.json
-            event-watch.patch
+            ${{ runner.temp }}/event-watch-manifest.json
+            ${{ runner.temp }}/event-watch.patch
           if-no-files-found: ignore
 
   coder-persist:
@@ -123,6 +244,7 @@ jobs:
       pull-requests: write
     env:
       GH_TOKEN: ${{ github.token }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
       - name: Checkout trusted default branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -135,19 +257,36 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: event-watch-candidate
+          path: ${{ runner.temp }}
 
-      - name: Validate manifest (fail closed)
+      - name: Validate manifest and remote state (fail closed)
         run: |
           set -euo pipefail
           node -e '
-            const fs=require("fs");
-            const m=JSON.parse(fs.readFileSync("event-watch-manifest.json","utf8"));
-            if(!["NO_WORK","PROPOSAL","ESCALATION"].includes(m.outcome)) throw new Error("bad outcome");
-            if(m.outcome==="ESCALATION" && m.workTargetType==="none") throw new Error("ESCALATION requires a work target");
-            if(m.outcome==="PROPOSAL" && !m.targetBranch) throw new Error("PROPOSAL requires targetBranch");
-            if(m.expectedBaseSha && !/^[0-9a-f]{40}$/.test(m.expectedBaseSha)) throw new Error("bad expectedBaseSha");
-            console.log("manifest OK", JSON.stringify(m));
+            const fs = require("fs");
+            const m = JSON.parse(fs.readFileSync(process.env.MANIFEST_PATH, "utf8"));
+            if (!["NO_WORK", "PROPOSAL", "ESCALATION"].includes(m.outcome)) {
+              throw new Error("Invalid outcome: " + m.outcome);
+            }
+            if (m.outcome === "ESCALATION") {
+              if (!["issue", "pull_request"].includes(m.workTargetType) || !m.workTargetNumber) {
+                throw new Error("ESCALATION requires valid workTargetType and workTargetNumber");
+              }
+            }
+            if (m.outcome === "PROPOSAL") {
+              if (!m.targetBranch || m.targetBranch === process.env.DEFAULT_BRANCH) {
+                throw new Error("PROPOSAL requires valid targetBranch not equal to default branch");
+              }
+              if (m.expectedHeadSha && !/^[0-9a-f]{40}$/.test(m.expectedHeadSha)) {
+                throw new Error("Invalid expectedHeadSha format");
+              }
+              if (m.expectedBaseSha && !/^[0-9a-f]{40}$/.test(m.expectedBaseSha)) {
+                throw new Error("Invalid expectedBaseSha format");
+              }
+            }
           '
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/event-watch-manifest.json
 
       - name: Configure bot identity
         run: |
@@ -157,37 +296,91 @@ jobs:
       - name: Persist bounded outcome
         run: |
           set -euo pipefail
-          outcome="$(node -e "console.log(require('./event-watch-manifest.json').outcome)")"
-          targetType="$(node -e "console.log(require('./event-watch-manifest.json').workTargetType||'none')")"
-          targetNumber="$(node -e "console.log(require('./event-watch-manifest.json').workTargetNumber||'')")"
-          summary="$(node -e "console.log(require('./event-watch-manifest.json').summary||'Handoff Go ESCALATION')")"
+          manifestPath="${{ runner.temp }}/event-watch-manifest.json"
+          outcome="$(node -e "console.log(require('$manifestPath').outcome)")"
+
           if [ "$outcome" = "ESCALATION" ]; then
-            if [ "$targetType" = "issue" ] && [ -n "$targetNumber" ]; then
+            targetType="$(node -e "console.log(require('$manifestPath').workTargetType)")"
+            targetNumber="$(node -e "console.log(require('$manifestPath').workTargetNumber)")"
+            summary="$(node -e "console.log(require('$manifestPath').summary||'Handoff Go ESCALATION')")"
+
+            if [ "$targetType" = "issue" ]; then
               gh issue comment "$targetNumber" --body "Handoff Go ESCALATION: $summary"
-            elif [ "$targetType" = "pull_request" ] && [ -n "$targetNumber" ]; then
+            elif [ "$targetType" = "pull_request" ]; then
               gh pr comment "$targetNumber" --body "Handoff Go ESCALATION: $summary"
             else
-              echo "ESCALATION but no valid work target"; exit 1
+              echo "Error: invalid workTargetType '$targetType' for ESCALATION"
+              exit 1
             fi
             exit 0
           fi
-          # PROPOSAL
-          targetBranch="$(node -e "console.log(require('./event-watch-manifest.json').targetBranch)")"
-          targetPR="$(node -e "console.log(require('./event-watch-manifest.json').targetPR||'')")"
-          expectedBaseSha="$(node -e "console.log(require('./event-watch-manifest.json').expectedBaseSha||'')")"
-          base="$(git rev-parse HEAD)"
-          if [ -n "$expectedBaseSha" ] && [ "$expectedBaseSha" != "$base" ]; then
-            echo "stale base: expected $expectedBaseSha, got $base"; exit 1
-          fi
-          # Fail closed if the patch no longer applies cleanly.
-          git apply --check event-watch.patch || { echo "stale or conflicting patch"; exit 1; }
-          git apply event-watch.patch
-          git checkout -B "$targetBranch"
-          git add -A
-          git commit -q -m "Handoff Go Coder Event Watch proposal"
-          git push -u origin "$targetBranch"
+
+          # PROPOSAL persistence
+          targetBranch="$(node -e "console.log(require('$manifestPath').targetBranch)")"
+          targetPR="$(node -e "console.log(require('$manifestPath').targetPR||'')")"
+          expectedHeadSha="$(node -e "console.log(require('$manifestPath').expectedHeadSha||'')")"
+          expectedBaseSha="$(node -e "console.log(require('$manifestPath').expectedBaseSha||'')")"
+          summary="$(node -e "console.log(require('$manifestPath').summary||'Handoff Go Coder Event Watch proposal')")"
+          patchFile="${{ runner.temp }}/event-watch.patch"
+
+          # Fetch remote branches to validate current remote state against manifest
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+
           if [ -n "$targetPR" ]; then
-            gh pr edit "$targetPR" --title "Handoff Go Coder Event Watch proposal" --body "Proposal from a Handoff Go Coder Event Watch wake. Reviewed by the Architect before promotion."
+            # Resuming existing PR: validate remote PR state
+            prInfo="$(gh pr view "$targetPR" --json state,headRefName,headRefOid)"
+            prState="$(node -e "console.log(JSON.parse(process.argv[1]).state)" "$prInfo")"
+            prBranch="$(node -e "console.log(JSON.parse(process.argv[1]).headRefName)" "$prInfo")"
+            prHeadOid="$(node -e "console.log(JSON.parse(process.argv[1]).headRefOid)" "$prInfo")"
+
+            if [ "$prState" != "OPEN" ]; then
+              echo "Error: target PR #$targetPR is $prState (must be OPEN)"
+              exit 1
+            fi
+            if [ "$prBranch" != "$targetBranch" ]; then
+              echo "Error: target PR #$targetPR branch is '$prBranch', expected '$targetBranch'"
+              exit 1
+            fi
+            if [ -n "$expectedHeadSha" ] && [ "$prHeadOid" != "$expectedHeadSha" ]; then
+              echo "Error: target PR #$targetPR head moved: expected $expectedHeadSha, current $prHeadOid"
+              exit 1
+            fi
+
+            # Fast-forward safe checkout at exact remote head
+            git checkout -B "$targetBranch" "origin/$targetBranch"
           else
-            gh pr create --base "${{ github.event.repository.default_branch }}" --head "$targetBranch" --title "Handoff Go Coder Event Watch proposal" --body "Proposal from a Handoff Go Coder Event Watch wake. Reviewed by the Architect before promotion."
+            # New branch or branch without existing PR
+            if git rev-parse --verify --quiet "refs/remotes/origin/$targetBranch" >/dev/null; then
+              remoteSha="$(git rev-parse "refs/remotes/origin/$targetBranch")"
+              if [ -n "$expectedHeadSha" ] && [ "$remoteSha" != "$expectedHeadSha" ]; then
+                echo "Error: remote branch $targetBranch head moved: expected $expectedHeadSha, current $remoteSha"
+                exit 1
+              fi
+              git checkout -B "$targetBranch" "origin/$targetBranch"
+            else
+              base="${expectedBaseSha:-origin/$DEFAULT_BRANCH}"
+              git checkout -B "$targetBranch" "$base"
+            fi
+          fi
+
+          # Fail closed if patch does not apply cleanly on target head
+          git apply --check "$patchFile"
+          git apply "$patchFile"
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "Handoff Go Coder Event Watch: $summary"
+
+          # Fast-forward push to remote branch
+          git push origin "$targetBranch"
+
+          if [ -n "$targetPR" ]; then
+            gh pr comment "$targetPR" --body "Updated by Handoff Go Coder Event Watch: $summary"
+          else
+            gh pr create --base "$DEFAULT_BRANCH" --head "$targetBranch" \
+              --title "Handoff Go Coder Event Watch: $summary" \
+              --body "Proposal generated by Handoff Go Coder Event Watch. Discovered work target: $targetBranch."
           fi

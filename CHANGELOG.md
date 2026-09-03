@@ -8,15 +8,18 @@ Coder Event Watch (repository-level wake), OpenAI Codex reference:
   `openai/codex-action` (pinned by full commit SHA); one GitHub durable-state
   event → one fresh bounded Coder `go` → persist → exit; never runs `go watch`;
 - two-job authority split: `coder-reason` (Codex, no GitHub write credential,
-  read-only, `persist-credentials: false`) runs the canonical full Coder
-  discovery from a trusted read-only durable snapshot + fetched refs and emits
-  a structured bounded manifest + workspace patch; `coder-persist` (no model
-  key, narrow write permissions) validates the manifest/head and applies it;
+  read-only, `persist-credentials: false`) runs canonical full Coder discovery
+  from a complete structured GraphQL snapshot (`$RUNNER_TEMP/github-durable-state.json`)
+  plus fetched refs, prepares the workspace on the exact target head, implements
+  changes, and captures the bounded manifest and patch into `$RUNNER_TEMP`
+  (outside the workspace tree);
 - native Codex Action write-access admission (via `${{ github.token }}`), no
   separate shell gate; bounded artifact handoff between jobs;
 - persistence targets the **discovered** work (never the wake event), uses a bot
-  identity + `GH_TOKEN` only in persist, fails closed on a stale patch
-  (`git apply --check`), and creates/updates the branch/PR idempotently;
+  identity + `GH_TOKEN` only in persist, prohibits mutating the default branch,
+  validates remote `targetPR`/branch head matches `expectedHeadSha`, fails closed
+  on a stale patch (`git apply --check`) or API failure, and fast-forward pushes
+  updates to the target branch;
 - wake-aftering events, GitHub-native concurrency, trusted-default checkout,
   finite timeout, standard `GITHUB_TOKEN`;
 - canonical wake-only Codex prompt (`.github/codex/handoff-go-coder-event-watch-prompt.md`);

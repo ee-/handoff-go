@@ -250,12 +250,26 @@ def main() -> None:
     # Read-only discovery + structured manifest + safe persistence.
     check("issues: read" in reason_part and "pull-requests: read" in reason_part,
           "Event Watch reason job must hold read-only Issues/PRs permission")
-    check(".codex/github-state.md" in ew_text,
-          "Event Watch reason job must produce a read-only durable-state snapshot")
+    check("RUNNER_TEMP/github-durable-state.json" in ew_text,
+          "Event Watch reason job must produce a complete structured durable-state snapshot in RUNNER_TEMP")
+    check("gh api graphql" in ew_text,
+          "Event Watch must query complete durable state via GraphQL")
     check("output-schema-file:" in ew_text,
           "Event Watch reason job must emit a structured bounded manifest")
     check(Path(".github/codex/handoff-go-event-watch-schema.json").is_file(),
           "Event Watch manifest schema file missing")
+    check(Path(".github/codex/handoff-go-coder-event-watch-implement-prompt.md").is_file(),
+          "Event Watch implement prompt file missing")
+    check("runner.temp" in ew_text,
+          "Event Watch must place runtime manifest and patch outside workspace tree")
+    check("DEFAULT_BRANCH" in persist_part,
+          "Event Watch persist job must prohibit mutating default branch")
+    check("expectedHeadSha" in persist_part,
+          "Event Watch persist job must validate expectedHeadSha")
+    check("targetPR" in persist_part,
+          "Event Watch persist job must validate and update target PR")
+    check("git push origin \"$targetBranch\"" in persist_part,
+          "Event Watch persist job must fast-forward push target branch")
     check("GH_TOKEN: ${{ github.token }}" in persist_part,
           "Event Watch persist job must pass the GitHub token to gh")
     check("git config user.name" in persist_part,
@@ -264,7 +278,7 @@ def main() -> None:
           "Event Watch persist job must fail closed on a stale patch")
     check("git add -N ." in ew_text,
           "Event Watch patch must include untracked files")
-    check("git apply event-watch.patch || true" not in persist_part,
+    check("git apply" in persist_part and "git apply event-watch.patch || true" not in persist_part,
           "Event Watch persist job must not swallow a patch-apply failure")
 
     # All third-party Actions across workflows must be pinned to a full commit SHA.
