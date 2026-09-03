@@ -217,6 +217,108 @@ def main() -> None:
     check("Next Actor: OWNER" not in protocol,
           "protocol routes to Owner as an executable role")
 
+    # --- Event Watch (v1.2) reference checks ---
+    ew = Path(".github/workflows/handoff-go-coder-event-watch.yml")
+    check(ew.is_file(), "Event Watch workflow missing")
+    ew_text = read(ew)
+    check("concurrency:" in ew_text, "Event Watch must set a concurrency group")
+    check("timeout-minutes:" in ew_text, "Event Watch must set a finite timeout")
+    check("pull_request_target" not in ew_text, "Event Watch must not use pull_request_target")
+    check("openai/codex-action@" in ew_text, "Event Watch must invoke the Codex GitHub Action")
+    # Native write-access admission is done by the Codex Action (via github.token).
+    # There must be no divergent gh-permission shell gate.
+    check("collaborators/" not in ew_text,
+          "Event Watch must rely on the Codex Action native admission")
+    # Two-job authority split: reason (no write cred) -> persist (write).
+    check("persist-credentials: false" in ew_text,
+          "Event Watch reason checkout must not persist GitHub credentials")
+    check("coder-reason" in ew_text and "coder-persist" in ew_text,
+          "Event Watch must split reason (no write cred) from persist (write)")
+    check("output-file:" in ew_text,
+          "Event Watch reason job must capture a bounded result")
+    check("actions/upload-artifact@" in ew_text and "actions/download-artifact@" in ew_text,
+          "Event Watch must hand the bounded result via pinned artifacts")
+    reason_part = ew_text.split("coder-persist:")[0]
+    persist_part = ew_text.split("coder-persist:")[1] if "coder-persist:" in ew_text else ""
+    check("openai-api-key:" in reason_part, "Event Watch reason job must run Codex with the model key")
+    check("issues: write" not in reason_part and "pull-requests: write" not in reason_part,
+          "Event Watch reason job must not hold GitHub write permissions")
+    check("issues: write" in persist_part and "pull-requests: write" in persist_part,
+          "Event Watch persist job must hold write permissions")
+    check("openai-api-key:" not in persist_part,
+          "Event Watch persist job must not hold the model key")
+    # Read-only discovery + structured manifest + safe persistence.
+    check("issues: read" in reason_part and "pull-requests: read" in reason_part,
+          "Event Watch reason job must hold read-only Issues/PRs permission")
+    check("RUNNER_TEMP/github-durable-state.json" in ew_text,
+          "Event Watch reason job must produce a complete structured durable-state snapshot in RUNNER_TEMP")
+    check("gh api graphql" in ew_text and "pageInfo" in ew_text and "hasNextPage" in ew_text,
+          "Event Watch must query complete durable state via GraphQL and check for truncation")
+    check("output-schema-file:" in ew_text,
+          "Event Watch reason job must emit a structured bounded manifest")
+    check(Path(".github/codex/handoff-go-event-watch-schema.json").is_file(),
+          "Event Watch manifest schema file missing")
+    check(Path(".github/codex/handoff-go-coder-event-watch-implement-prompt.md").is_file(),
+          "Event Watch implement prompt file missing")
+    check("runner.temp" in ew_text,
+          "Event Watch must place runtime manifest and patch outside workspace tree")
+    check("DEFAULT_BRANCH" in persist_part,
+          "Event Watch persist job must prohibit mutating default branch")
+    check("expectedHeadSha" in persist_part,
+          "Event Watch persist job must validate expectedHeadSha")
+    check("targetPR" in persist_part,
+          "Event Watch persist job must validate and update target PR")
+    check("git push origin \"$targetBranch\"" in persist_part,
+          "Event Watch persist job must fast-forward push target branch")
+    check("GH_TOKEN: ${{ github.token }}" in persist_part,
+          "Event Watch persist job must pass the GitHub token to gh")
+    check("git config user.name" in persist_part,
+          "Event Watch persist job must configure a bot identity")
+    check("git apply --check" in persist_part,
+          "Event Watch persist job must fail closed on a stale patch")
+    check("git add -N ." in ew_text and "git add -N . 2>/dev/null || true" not in ew_text,
+          "Event Watch patch capture must fail closed on git add -N")
+    check("expectedHeadSha" in reason_part,
+          "Event Watch reason job must enforce expectedHeadSha when resuming")
+    check("git apply" in persist_part and "git apply event-watch.patch || true" not in persist_part,
+          "Event Watch persist job must not swallow a patch-apply failure")
+    check("skills/handoff-go" in reason_part and "AGENTS.md" in reason_part,
+          "Event Watch reason job must verify trusted governance immutability on target head")
+    check("AGENTS.override.md" in reason_part,
+          "Event Watch reason job must check AGENTS.override.md immutability")
+    check("trustedSkillDir" in reason_part,
+          "Event Watch reason job must dynamically resolve Skill path from bootstrap")
+    check("READY_FOR_REVIEW" in persist_part and "Next Actor: ARCHITECT" in persist_part,
+          "Event Watch persist job must persist canonical routing to Architect")
+    check("stale base" in reason_part and "stale base" in persist_part,
+          "Event Watch must stale-guard new branch base in both reason and persist")
+    check(Path(".github/codex/handoff-go-event-watch-implement-schema.json").is_file(),
+          "Event Watch implement schema file missing")
+    check("SECURITY_PREFLIGHT: PASS" in persist_part and "SECURITY_BLOCKED" in persist_part,
+          "Event Watch persist job must let implementation Security Gate control persistence")
+    check("unobserved evidence" in persist_part.lower(),
+          "Event Watch persist job must fail closed on unobserved security evidence")
+    check("export BODY_FILE" in persist_part and "fs.writeFileSync(process.env.BODY_FILE" in persist_part,
+          "Event Watch persist job must export BODY_FILE before writing observed evidence")
+    check(persist_part.find("export BODY_FILE") < persist_part.find("fs.writeFileSync(process.env.BODY_FILE"),
+          "Event Watch persist job must export BODY_FILE before node writeFileSync")
+    # All third-party Actions across workflows must be pinned to a full commit SHA.
+    for wf in (ROOT / ".github/workflows").glob("*.yml"):
+        wf_text = wf.read_text(encoding="utf-8")
+        for m in re.finditer(r"uses:\s*(\S+)", wf_text):
+            uses = m.group(1)
+            if "@" in uses:
+                _, ref = uses.rsplit("@", 1)
+                if not re.fullmatch(r"[0-9a-f]{40}", ref):
+                    check(False, f"{wf.name}: action not pinned to a full SHA: {uses}")
+
+    # Canonical Codex Event Watch prompt must be wake-only and exactly-one-go.
+    ew_prompt = Path(".github/codex/handoff-go-coder-event-watch-prompt.md")
+    check(ew_prompt.is_file(), "Event Watch prompt file missing")
+    pr_text = ew_prompt.read_text(encoding="utf-8")
+    for needle in ("wake signal only", "exactly one ordinary Handoff Go", "no actionable Coder work", "Security Gate"):
+        check(needle in pr_text, f"Event Watch prompt missing: {needle}")
+
     failures = []
     for path in text_files():
         content = path.read_text(encoding="utf-8")

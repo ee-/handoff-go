@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Handoff Go Coder Event Watch bounded result",
+  "type": "object",
+  "required": ["outcome", "workTargetType", "workTargetNumber"],
+  "properties": {
+    "outcome": { "enum": ["NO_WORK", "PROPOSAL", "ESCALATION"] },
+    "workTargetType": { "enum": ["issue", "pull_request", "none"] },
+    "workTargetNumber": { "type": ["integer", "null"] },
+    "targetBranch": { "type": ["string", "null"], "pattern": "^[a-zA-Z0-9._/-]+$" },
+    "targetPR": { "type": ["integer", "null"] },
+    "expectedHeadSha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+    "expectedBaseSha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+    "summary": { "type": ["string", "null"] },
+    "evidencePacket": { "type": ["string", "null"] },
+    "escalationPacket": { "type": ["string", "null"] }
+  },
+  "additionalProperties": false
+}

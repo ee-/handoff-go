@@ -69,6 +69,13 @@ requested interval. It is a wake mechanism, not workflow state; each tick reload
 trusted governance and rediscover the durable GitHub state. Harnesses use their
 native scheduling/extension capability (see `skills/handoff-go/references/watch.md`).
 
+**Event Watch (v1.2)** is the repository-level counterpart: a durable GitHub
+state event wakes one fresh Coder `go` execution and exits (it never runs
+`go watch`). The reference implementation ships as
+`.github/workflows/handoff-go-coder-event-watch.yml` (OpenAI Codex via the
+official Codex GitHub Action). It is explicit opt-in — a repository owner
+deliberately enables it; normal `$handoff-go setup` does not.
+
 This repository is currently private and pre-publication. From a local checkout,
 the same skill can be installed by passing its path to `npx skills add`.
 

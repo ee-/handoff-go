@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Handoff Go Coder Event Watch implementation result",
+  "type": "object",
+  "required": ["implementationOutcome", "securityPreflight"],
+  "properties": {
+    "implementationOutcome": { "enum": ["PROPOSAL", "ESCALATION", "SECURITY_BLOCKED"] },
+    "securityPreflight": { "enum": ["PASS", "BLOCKED"] },
+    "evidencePacket": { "type": ["string", "null"] },
+    "escalationPacket": { "type": ["string", "null"] },
+    "summary": { "type": ["string", "null"] }
+  },
+  "additionalProperties": false
+}
