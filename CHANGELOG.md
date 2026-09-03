@@ -12,9 +12,13 @@ Coder Event Watch (repository-level wake), OpenAI Codex reference:
   from a complete structured GraphQL snapshot (`$RUNNER_TEMP/github-durable-state.json`)
   plus fetched refs, verifies trusted governance immutability on target head
   (root `AGENTS.md`, `AGENTS.override.md`, dynamically resolved `Skill:` directory,
-  and `.codex/`), preserves trusted implement prompt before checkout, implements
-  changes, and captures the bounded manifest, implementation result, and patch
-  into `$RUNNER_TEMP` (outside the workspace tree);
+  and `.codex/`), preserves the complete trusted control bundle in `$RUNNER_TEMP`
+  before candidate checkout, implements changes, and captures the bounded manifest,
+  implementation result, and patch into `$RUNNER_TEMP` (outside the workspace tree);
+- public launch trust boundary hardening: removed unsafe PR-review triggers (keeping
+  only `issues`, `issue_comment`, `workflow_dispatch`), strictly bound `Skill:` and
+  `Immutable ref:` parsing to exactly one valid managed `AGENTS.md` block, and
+  updated documentation to reflect public repository / pre-release status;
 - post-implementation Security Gate controls persistence: second Codex outputs
   structured implementation result (`handoff-go-event-watch-implement-schema.json`),
   requiring observed `SECURITY_PREFLIGHT: PASS` to proceed to proposal persistence;
@@ -28,8 +32,8 @@ Coder Event Watch (repository-level wake), OpenAI Codex reference:
   `targetPR`/branch head matches `expectedHeadSha`, fails closed on a stale patch
   (`git apply --check`) or API failure, and fast-forward pushes updates to the
   target branch;
-- wake-aftering events, GitHub-native concurrency, trusted-default checkout,
-  finite timeout, standard `GITHUB_TOKEN`;
+- GitHub-native concurrency, trusted-default checkout, finite timeout, standard
+  `GITHUB_TOKEN`;
 - canonical wake-only Codex prompt (`.github/codex/handoff-go-coder-event-watch-prompt.md`);
 - explicit opt-in: a repository owner enables it; setup does not;
 - Codex Event Watch `REFERENCE`; Claude Code / OpenCode documented `EVENT_READY`;

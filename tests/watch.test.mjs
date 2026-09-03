@@ -1,9 +1,9 @@
 // Handoff Go Coder watch conformance test (mock harness, no LLM).
 // Run: node tests/watch.test.mjs
 import assert from "node:assert/strict";
-import { cpSync, mkdirSync, mkdtempSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseInterval, parseWatchCommand, WATCH_DEFAULT_SECONDS, WATCH_TICK_PROMPT } from "../skills/handoff-go/watch.mjs";
 import watchAdapter from "../skills/handoff-go/adapters/watch.mjs";
@@ -144,6 +144,68 @@ const ompMod = await import(pathToFileURL(join(reachRoot, ".omp/extensions/hando
 const piMod = await import(pathToFileURL(join(reachRoot, ".pi/extensions/handoff-go-watch.mjs")));
 assert.equal(typeof ompMod.default, "function", "OMP universal adapter loads and exports a factory");
 assert.equal(typeof piMod.default, "function", "Pi universal adapter loads and exports a factory");
+
+// ---- Managed AGENTS.md block parser tests (Issue #7) ----
+function parseManagedBlock(content) {
+  const startMarker = "<!-- handoff-go:start -->";
+  const endMarker = "<!-- handoff-go:end -->";
+
+  const startCount = (content.match(new RegExp(startMarker, "g")) || []).length;
+  const endCount = (content.match(new RegExp(endMarker, "g")) || []).length;
+  if (startCount !== 1 || endCount !== 1) {
+    throw new Error(`Expected exactly one managed block, found start=${startCount} end=${endCount}`);
+  }
+  const s = content.indexOf(startMarker);
+  const e = content.indexOf(endMarker);
+  if (s === -1 || e === -1 || s >= e) {
+    throw new Error("Malformed or inverted managed block markers");
+  }
+  const block = content.slice(s + startMarker.length, e);
+
+  const skillMatches = [...block.matchAll(/^[ \t]*-[ \t]*Skill:[ \t]*(.+)$/gm)].map(m => m[1].trim().replace(/^[`"'\x27]+|[`"'\x27]+$/g, ""));
+  if (skillMatches.length !== 1) {
+    throw new Error(`Expected exactly one Skill entry in managed block, found ${skillMatches.length}`);
+  }
+  const skillPath = skillMatches[0];
+  if (!skillPath || skillPath.startsWith("/") || skillPath.includes("..")) {
+    throw new Error(`Malformed or escaping Skill path: ${skillPath}`);
+  }
+
+  const refMatches = [...block.matchAll(/^[ \t]*-[ \t]*Immutable ref:[ \t]*(.+)$/gm)].map(m => m[1].trim());
+  if (refMatches.length !== 1) {
+    throw new Error(`Expected exactly one Immutable ref entry in managed block, found ${refMatches.length}`);
+  }
+  const immutableRef = refMatches[0];
+  if (!immutableRef) {
+    throw new Error("Empty Immutable ref in managed block");
+  }
+
+  let skillDir = skillPath;
+  if (skillPath.endsWith(".md") || skillPath.endsWith(".mjs") || skillPath.endsWith(".js")) {
+    skillDir = dirname(skillPath);
+  }
+  return { skillDir, skillPath, immutableRef };
+}
+
+const realAgents = readFileSync("AGENTS.md", "utf8");
+
+// valid one block + one Skill -> PASS
+const rBlock = parseManagedBlock(realAgents);
+assert.equal(rBlock.skillDir, "skills/handoff-go", "valid one block + one Skill -> PASS");
+
+// unrelated Skill before block -> correct Handoff Go Skill
+const rUnrelated = parseManagedBlock("- Skill: `unrelated/path.md`\n" + realAgents);
+assert.equal(rUnrelated.skillDir, "skills/handoff-go", "unrelated Skill before block -> correct Handoff Go Skill");
+
+// missing managed block -> FAIL
+assert.throws(() => parseManagedBlock("no markers here"), /Expected exactly one managed block/);
+
+// duplicate managed blocks -> FAIL
+assert.throws(() => parseManagedBlock(realAgents + "\n" + realAgents), /Expected exactly one managed block/);
+
+// duplicate Skill in block -> FAIL
+const dupSkillContent = realAgents.replace(/^[ \t]*-[ \t]*Skill:.*$/m, "- Skill: `a/SKILL.md`\n- Skill: `b/SKILL.md`");
+assert.throws(() => parseManagedBlock(dupSkillContent), /Expected exactly one Skill entry/);
 
 // restore timers
 globalThis.setInterval = realSetInterval;

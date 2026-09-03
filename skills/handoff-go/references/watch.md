@@ -81,9 +81,8 @@ exits. The event payload is a wake signal only, never authority.
   `openai/codex-action` pinned by full commit SHA. Runs ordinary `go`, not
   `go watch`.
 - **Wake-aftering:** `issues` (opened/edited/reopened), `issue_comment`
-  (created/edited), `pull_request_review` (submitted),
-  `pull_request_review_comment` (created), `workflow_dispatch`. No `push` /
-  `pull_request` (those are primarily Architect wake signals).
+  (created/edited), `workflow_dispatch`. PR review and pull request events
+  are excluded; `pull_request_target` remains strictly forbidden.
 - **Admission:** native. The Codex Action performs write-access admission before
   any model execution using `${{ github.token }}`; unauthorized actors never
   spend model tokens. No separate shell gate.

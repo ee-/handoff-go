@@ -1,8 +1,8 @@
 # Publication Checklist
 
-Handoff Go is prepared for open source but remains private. Publication is a
-three-phase, gated transition ordered below. The invariant at every phase
-boundary is:
+Handoff Go is open source on a public repository, but its first release is not
+yet published. Publication is a three-phase, gated transition ordered below.
+The invariant at every phase boundary is:
 
 ```text
 public != released
@@ -36,8 +36,8 @@ Everything below must pass **before** the repository's visibility changes.
 
 After the Owner authorizes making the repository public:
 
-- [ ] Repository visibility changed to public.
-- [ ] Repository renamed to `ee-/handoff-go` if not already done.
+- [x] Repository visibility changed to public.
+- [x] Repository renamed to `ee-/handoff-go` if not already done.
 - [ ] Branch protection / ruleset or equivalent available protection configured.
 - [ ] GitHub private vulnerability reporting enabled where available.
 - [ ] Repository description and topics configured if appropriate.
@@ -71,8 +71,7 @@ Changing visibility or publishing the release is outside the current Work Order.
 - The repository validator checks the required markers for setup preservation,
   unopted `go`, role rediscovery, untrusted governance, preflight ordering,
   stale-head rejection, and contradictory-routing failure.
-- The repository is private on `main`. GitHub currently returns HTTP 403 for
-  branch protection on this private repository under the present account plan;
-  required review/check protection therefore remains a Phase B gate.
-- Private vulnerability reporting could not be verified through the repository
-  API while private and remains a Phase B gate.
+- The repository is public on `main`; the first versioned release has not yet
+  been published.
+- Required review/check branch protection and private vulnerability reporting
+  remain subject to Owner configuration before the v1.0.0 release gate.
