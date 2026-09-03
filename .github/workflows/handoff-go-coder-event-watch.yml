@@ -512,6 +512,7 @@ jobs:
 
           # Extract observed Evidence Packet (never fabricated)
           prBodyFile="${{ runner.temp }}/pr-body.md"
+          export BODY_FILE="$prBodyFile"
           node -e '
             const fs = require("fs");
             const r = JSON.parse(fs.readFileSync(process.env.RESULT_PATH, "utf8"));
@@ -520,8 +521,6 @@ jobs:
             }
             fs.writeFileSync(process.env.BODY_FILE, r.evidencePacket, "utf8");
           '
-          export BODY_FILE="$prBodyFile"
-
           # Fetch remote branches to validate current remote state against manifest
           git fetch origin '+refs/heads/*:refs/remotes/origin/*'
           currentDefaultSha="$(git rev-parse "origin/$DEFAULT_BRANCH")"

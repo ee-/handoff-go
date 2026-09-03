@@ -298,6 +298,10 @@ def main() -> None:
           "Event Watch persist job must let implementation Security Gate control persistence")
     check("unobserved evidence" in persist_part.lower(),
           "Event Watch persist job must fail closed on unobserved security evidence")
+    check("export BODY_FILE" in persist_part and "fs.writeFileSync(process.env.BODY_FILE" in persist_part,
+          "Event Watch persist job must export BODY_FILE before writing observed evidence")
+    check(persist_part.find("export BODY_FILE") < persist_part.find("fs.writeFileSync(process.env.BODY_FILE"),
+          "Event Watch persist job must export BODY_FILE before node writeFileSync")
     # All third-party Actions across workflows must be pinned to a full commit SHA.
     for wf in (ROOT / ".github/workflows").glob("*.yml"):
         wf_text = wf.read_text(encoding="utf-8")
