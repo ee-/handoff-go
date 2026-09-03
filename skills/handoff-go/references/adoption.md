@@ -65,12 +65,13 @@ Do not leave angle-bracket placeholders in a completed project bootstrap.
 ## Watch
 
 `go watch` (Coder only) ships with the skill — the shared core (`watch.mjs`)
-and the OMP/Pi extension glue in `adapters/`. Setup is harness-neutral and does
-not install a coding-agent binary, an adapter file, or harness configuration.
-For OMP/Pi, enabling watch is a one-time native load step: copy the shared core
-and the adapter into the harness root and extension dir — `watch.mjs` to
-`.omp/watch.mjs` / `.pi/watch.mjs`, and the adapter to `.omp/extensions/` /
-`.pi/extensions/` (see [watch.md](watch.md)).
+and the universal extension adapter in `adapters/watch.mjs`. Setup is
+harness-neutral and does not install a coding-agent binary, an adapter file, or
+harness configuration. For OMP/Pi, enabling watch is a one-time native load
+step: copy the shared core and the adapter into the harness root and extension
+dir — `watch.mjs` to `.omp/watch.mjs` / `.pi/watch.mjs`, and `adapters/watch.mjs`
+to `.omp/extensions/handoff-go-watch.mjs` / `.pi/extensions/handoff-go-watch.mjs`
+(see [watch.md](watch.md)).
 
 ## Check
 

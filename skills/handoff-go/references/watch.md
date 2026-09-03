@@ -57,8 +57,8 @@ repository-level durable-state wake (v1.2): one GitHub event → one fresh Coder
 
 | Harness | Local Watch | Event Watch | Mechanism |
 |---|---|---|---|
-| OMP / Oh My Pi | supported (LIFECYCLE) | HEADLESS_READY, not implemented | `.omp/extensions/` extension |
-| Pi coding agent | supported (LIFECYCLE) | HEADLESS_READY, not implemented | `.pi/extensions/` extension |
+| OMP / Oh My Pi | supported (LIFECYCLE) | HEADLESS_READY, not implemented | `.omp/extensions/` universal extension (`adapters/watch.mjs`) |
+| Pi coding agent | supported (LIFECYCLE) | HEADLESS_READY, not implemented | `.pi/extensions/` universal extension (`adapters/watch.mjs`) |
 | Claude Code | — | EVENT_READY (official GitHub Action) | native session scheduler / official integration |
 | OpenCode | — | EVENT_READY (official GitHub integration) | native plugin + session `prompt_async` |
 | DeepSeek Harness | — | HEADLESS_READY, not implemented | native Cordis timer + `agent.followup` |
@@ -134,19 +134,18 @@ binary or adapter file.
 
 ### Enabling watch in a harness
 
-The adapter files ship in the skill package (`adapters/omp.mjs`,
-`adapters/pi.mjs`). OMP and Pi auto-discover project extensions only in
-`.omp/extensions/` / `.pi/extensions/`, so enabling watch is a one-time native
-load step:
+The universal adapter file ships in the skill package (`adapters/watch.mjs`).
+OMP and Pi auto-discover project extensions only in `.omp/extensions/` /
+`.pi/extensions/`, so enabling watch is a one-time native load step:
 
 ```sh
 mkdir -p .omp/extensions
 cp <skill>/watch.mjs .omp/watch.mjs
-cp <skill>/adapters/omp.mjs .omp/extensions/handoff-go-watch.mjs
+cp <skill>/adapters/watch.mjs .omp/extensions/handoff-go-watch.mjs
 
 mkdir -p .pi/extensions
 cp <skill>/watch.mjs .pi/watch.mjs
-cp <skill>/adapters/pi.mjs .pi/extensions/handoff-go-watch.mjs
+cp <skill>/adapters/watch.mjs .pi/extensions/handoff-go-watch.mjs
 ```
 
 The shared core must be copied to the harness root (`.omp/watch.mjs` /

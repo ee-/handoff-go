@@ -1,13 +1,11 @@
 // Shared Handoff Go `go watch` primitives — dependency-free, harness-agnostic.
 //
-// These are the only watch semantics shared across the six Coder adapters.
+// These are the only watch semantics shared across Coder adapters.
 // Each adapter owns its host lifecycle; the parser and tick prompt are the
 // protocol surface. Do not let this become a scheduler framework.
 
 export const WATCH_MIN_SECONDS = 60;
-export const WATCH_MIN_MS = WATCH_MIN_SECONDS * 1000;
 export const WATCH_DEFAULT_SECONDS = 60;
-export const WATCH_DEFAULT_MS = WATCH_DEFAULT_SECONDS * 1000;
 
 // Canonical internal watch-tick instruction, identical in meaning across every
 // Coder harness. It is a wake signal only: it has no protocol authority.
@@ -40,12 +38,6 @@ export function parseInterval(value) {
   return seconds;
 }
 
-export function formatInterval(seconds) {
-  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
-  if (seconds % 60 === 0) return `${seconds / 60}m`;
-  return `${seconds}s`;
-}
-
 // Classify a `go watch` command line. Returns one of:
 //   { kind: "start", intervalSeconds } | { kind: "stop" } | { kind: "none" }
 export function parseWatchCommand(text) {
@@ -56,20 +48,6 @@ export function parseWatchCommand(text) {
   const seconds = parseInterval(m[1]);
   if (seconds === null) return { kind: "none", invalid: true };
   return { kind: "start", intervalSeconds: seconds };
-}
-
-// Small session-scoped runtime state. Carries no project reasoning context and
-// is never a source of workflow truth. GitHub durable state stays authoritative.
-export function createWatchState() {
-  return {
-    active: false,
-    intervalSeconds: WATCH_DEFAULT_SECONDS,
-    sessionId: null,
-    repoId: null,
-    pendingWake: false,
-    nextDeadline: null,
-    scheduledId: null,
-  };
 }
 
 // One runnable check for the non-trivial parser (ponytail).
@@ -87,9 +65,6 @@ function demo() {
   assert(parseInterval("59") === null, "below 60 rejected");
   assert(parseInterval("59s") === null, "below 60 rejected 59s");
   assert(parseInterval("abc") === null, "invalid");
-  assert(formatInterval(60) === "1m", "fmt 60");
-  assert(formatInterval(300) === "5m", "fmt 300");
-  assert(formatInterval(3600) === "1h", "fmt 3600");
   assert(JSON.stringify(parseWatchCommand("go watch")) === JSON.stringify({ kind: "start", intervalSeconds: 60 }), "cmd start default");
   assert(JSON.stringify(parseWatchCommand("go watch 5m")) === JSON.stringify({ kind: "start", intervalSeconds: 300 }), "cmd start 5m");
   assert(JSON.stringify(parseWatchCommand("go watch stop")) === JSON.stringify({ kind: "stop" }), "cmd stop");

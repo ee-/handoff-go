@@ -15,13 +15,6 @@ Owner / Human
   -> Coder（Codex、Claude Code、OpenCode、Pi、Hermes、OMP……）
 ```
 
-GitHub 对象就是协议本身：
-
-```text
-Issue = Work Contract    PR = Evidence Packet    Merge = Promotion
-Comment = Decision / Escalation / Routing        Review = Acceptance
-```
-
 面向人类的命令就是普通文本：
 
 ```text

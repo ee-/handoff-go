@@ -6,11 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseInterval, parseWatchCommand, WATCH_DEFAULT_SECONDS, WATCH_TICK_PROMPT } from "../skills/handoff-go/watch.mjs";
-import ompAdapter from "../skills/handoff-go/adapters/omp.mjs";
-import piAdapter from "../skills/handoff-go/adapters/pi.mjs";
+import watchAdapter from "../skills/handoff-go/adapters/watch.mjs";
 
-// Patch global timers once so both adapters' timers are observable (Pi uses raw
-// setInterval; OMP uses the managed ctx.setInterval).
+// Patch global timers once so raw fallback timer usage (e.g. Pi) is observable.
 const realSetInterval = globalThis.setInterval;
 const realClearInterval = globalThis.clearInterval;
 globalThis.__hgIntervals = [];
@@ -18,7 +16,7 @@ globalThis.__hgCleared = [];
 globalThis.setInterval = (fn, ms) => { globalThis.__hgIntervals.push({ fn, ms }); return 5000 + globalThis.__hgIntervals.length; };
 globalThis.clearInterval = (id) => { globalThis.__hgCleared.push(id); };
 
-function makeEnv() {
+function makeEnv(shape = "managed") {
   const handlers = {};
   const sent = [];
   const ctxIntervals = [];
@@ -33,11 +31,12 @@ function makeEnv() {
     cwd: "/tmp",
     isIdle: () => true,
     hasPendingMessages: () => false,
-    // managed timer context (OMP)
-    setInterval(fn, ms) { ctxIntervals.push({ fn, ms }); return 7000 + ctxIntervals.length; },
-    clearTimer(id) { ctxCleared.push(id); },
   };
-  return { api, ctx, handlers, sent, ctxIntervals, ctxCleared };
+  if (shape === "managed") {
+    ctx.setInterval = (fn, ms) => { ctxIntervals.push({ fn, ms }); return 7000 + ctxIntervals.length; };
+    ctx.clearTimer = (id) => { ctxCleared.push(id); };
+  }
+  return { api, ctx, handlers, sent, ctxIntervals, ctxCleared, shape };
 }
 
 function emit(env, name, event) {
@@ -47,7 +46,7 @@ function emit(env, name, event) {
 }
 
 async function run(adapter, text, source = "interactive", opts = {}) {
-  const env = makeEnv();
+  const env = makeEnv(opts.shape ?? "managed");
   adapter(env.api);
   emit(env, "session_start", {});
   const inputResult = await emit(env, "input", { text, source });
@@ -69,83 +68,82 @@ assert.equal(parseWatchCommand("go watch 30s").invalid, true, "invalid interval"
 assert.deepEqual(parseWatchCommand("go watch stop"), { kind: "stop" });
 assert.equal(parseWatchCommand("go build").kind, "none");
 
-for (const adapter of [ompAdapter, piAdapter]) {
-  const name = adapter.name;
-  const handled = adapter === ompAdapter ? { handled: true } : { action: "handled" };
+// ---- universal adapter in both host shapes (managed OMP vs raw Pi) ----
+for (const shape of ["managed", "fallback"]) {
+  const handled = { handled: true, action: "handled" };
 
   // Fields are on the EVENT, not the ctx: put them on ctx only -> no activation.
-  const envOnlyCtx = makeEnv();
-  adapter(envOnlyCtx.api);
+  const envOnlyCtx = makeEnv(shape);
+  watchAdapter(envOnlyCtx.api);
   emit(envOnlyCtx, "session_start", {});
-  const ctxOnlyResult = await emit(envOnlyCtx, "input", {}, { text: "go watch", source: "interactive" }); // event empty, ctx overloaded
+  const ctxOnlyResult = await emit(envOnlyCtx, "input", {}, { text: "go watch", source: "interactive" });
   emit(envOnlyCtx, "session_shutdown", {});
-  // no activation, no wake, not handled
-  // (event is {} so it should not activate)
-  // NB: makeEnv's emit passes (event, ctx); a handler reading event.text gets "".
+  assert.equal(envOnlyCtx.sent.length, 0, `${shape}: ctx-only fields do not activate`);
+  assert.equal(ctxOnlyResult, undefined, `${shape}: ctx-only fields not handled`);
 
   // interactive event.text="go watch" activates + one immediate wake + consumed.
-  const r = await run(adapter, "go watch");
-  assert.equal(r.env.sent.length, 1, `${name}: exactly one immediate wake`);
-  assert.ok(r.env.sent[0].msg.content.includes(WATCH_TICK_PROMPT.slice(0, 30)), `${name}: tick prompt injected`);
-  assert.deepEqual(r.inputResult, handled, `${name}: recognized command consumed`);
-  const intervalMs = r.env.ctxIntervals[0]?.ms ?? globalThis.__hgIntervals.at(-1)?.ms;
-  assert.equal(intervalMs, 60000, `${name}: default interval 60s`);
+  const r = await run(watchAdapter, "go watch", "interactive", { shape });
+  assert.equal(r.env.sent.length, 1, `${shape}: exactly one immediate wake`);
+  assert.ok(r.env.sent[0].msg.content.includes(WATCH_TICK_PROMPT.slice(0, 30)), `${shape}: tick prompt injected`);
+  assert.deepEqual(r.inputResult, handled, `${shape}: recognized command consumed`);
+  assert.equal(r.inputResult.handled, true, `${shape}: exposes handled: true for OMP`);
+  assert.equal(r.inputResult.action, "handled", `${shape}: exposes action: handled for Pi`);
+
+  if (shape === "managed") {
+    assert.equal(r.env.ctxIntervals[0]?.ms, 60000, `${shape}: managed interval 60s`);
+  } else {
+    assert.equal(globalThis.__hgIntervals.at(-1)?.ms, 60000, `${shape}: fallback raw interval 60s`);
+  }
 
   // custom interval >=60s
-  const r2 = await run(adapter, "go watch 5m");
-  const im2 = r2.env.ctxIntervals[0]?.ms ?? globalThis.__hgIntervals.at(-1)?.ms;
-  assert.equal(im2, 300000, `${name}: 5m interval`);
+  const r2 = await run(watchAdapter, "go watch 5m", "interactive", { shape });
+  const im2 = shape === "managed" ? r2.env.ctxIntervals[0]?.ms : globalThis.__hgIntervals.at(-1)?.ms;
+  assert.equal(im2, 300000, `${shape}: 5m interval`);
 
   // below-60s is rejected but consumed (no activation, still handled)
-  const r3 = await run(adapter, "go watch 30s");
-  assert.deepEqual(r3.inputResult, handled, `${name}: invalid interval consumed`);
-  assert.equal(r3.env.sent.length, 0, `${name}: invalid interval does not wake`);
+  const r3 = await run(watchAdapter, "go watch 30s", "interactive", { shape });
+  assert.deepEqual(r3.inputResult, handled, `${shape}: invalid interval consumed`);
+  assert.equal(r3.env.sent.length, 0, `${shape}: invalid interval does not wake`);
 
   // event.source="extension" is NOT consumed and does NOT reactivate
-  const r4 = await run(adapter, "go watch", "extension");
-  assert.equal(r4.env.sent.length, 0, `${name}: injected wake not re-activated`);
-  assert.equal(r4.inputResult, undefined, `${name}: injected wake continues normally`);
+  const r4 = await run(watchAdapter, "go watch", "extension", { shape });
+  assert.equal(r4.env.sent.length, 0, `${shape}: injected wake not re-activated`);
+  assert.equal(r4.inputResult, undefined, `${shape}: injected wake continues normally`);
 
-  // fields only on ctx do NOT make the command pass (guard against regression)
-  assert.equal(envOnlyCtx.sent.length, 0, `${name}: ctx-only fields do not activate`);
-  assert.equal(ctxOnlyResult, undefined, `${name}: ctx-only fields not handled`);
-
-  const b = await run(adapter, "go watch", "interactive", { shutdown: false });
-  const tickFn = b.env.ctxIntervals[0]?.fn ?? globalThis.__hgIntervals.at(-1)?.fn;
+  // busy agent does not overlap
+  const b = await run(watchAdapter, "go watch", "interactive", { shape, shutdown: false });
+  const tickFn = shape === "managed" ? b.env.ctxIntervals[0]?.fn : globalThis.__hgIntervals.at(-1)?.fn;
   b.env.ctx.isIdle = () => false;
   tickFn(); // fire tick while busy
-  assert.equal(b.env.sent.length, 1, `${name}: busy tick does not overlap`);
+  assert.equal(b.env.sent.length, 1, `${shape}: busy tick does not overlap`);
 
   // stop consumes and clears the timer
-  const s = makeEnv();
-  adapter(s.api);
+  const s = makeEnv(shape);
+  watchAdapter(s.api);
   emit(s, "session_start", {});
-  emit(s, "input", { text: "go watch", source: "interactive" });
-  const clearedBefore = s.ctxCleared.length + globalThis.__hgCleared.length;
+  await emit(s, "input", { text: "go watch", source: "interactive" });
+  const clearedBefore = shape === "managed" ? s.ctxCleared.length : globalThis.__hgCleared.length;
   const stopResult = await emit(s, "input", { text: "go watch stop", source: "interactive" });
   emit(s, "session_shutdown", {});
-  assert.deepEqual(stopResult, handled, `${name}: stop consumed`);
-  assert.ok(s.ctxCleared.length + globalThis.__hgCleared.length > clearedBefore, `${name}: stop clears timer`);
+  assert.deepEqual(stopResult, handled, `${shape}: stop consumed`);
+  const clearedAfter = shape === "managed" ? s.ctxCleared.length : globalThis.__hgCleared.length;
+  assert.ok(clearedAfter > clearedBefore, `${shape}: stop clears timer`);
 }
 
-// Reachability: adapters `import "../watch.mjs"`, so the core must be copied to
-// the harness root (`.omp/watch.mjs`) next to `.omp/extensions/`. This test
-// copies exactly what the docs tell the user to, then loads the adapter.
+// Reachability: universal adapter `import "../watch.mjs"` from `.omp/extensions/`
+// and `.pi/extensions/` resolves to `.omp/watch.mjs` and `.pi/watch.mjs`.
 const reachRoot = mkdtempSync(join(tmpdir(), "hgwatch-"));
 const reachCopy = (from, to) => cpSync(join(process.cwd(), from), join(reachRoot, to), { recursive: true });
 mkdirSync(join(reachRoot, ".omp/extensions"), { recursive: true });
 mkdirSync(join(reachRoot, ".pi/extensions"), { recursive: true });
-reachCopy("skills/handoff-go/adapters/omp.mjs", ".omp/extensions/handoff-go-watch.mjs");
-reachCopy("skills/handoff-go/adapters/pi.mjs", ".pi/extensions/handoff-go-watch.mjs");
-
-// With the core copied as documented, the adapter `import "../watch.mjs"` from
-// `.omp/extensions/` resolves to `.omp/watch.mjs`, so both adapters load.
+reachCopy("skills/handoff-go/adapters/watch.mjs", ".omp/extensions/handoff-go-watch.mjs");
+reachCopy("skills/handoff-go/adapters/watch.mjs", ".pi/extensions/handoff-go-watch.mjs");
 reachCopy("skills/handoff-go/watch.mjs", ".omp/watch.mjs");
 reachCopy("skills/handoff-go/watch.mjs", ".pi/watch.mjs");
 const ompMod = await import(pathToFileURL(join(reachRoot, ".omp/extensions/handoff-go-watch.mjs")));
 const piMod = await import(pathToFileURL(join(reachRoot, ".pi/extensions/handoff-go-watch.mjs")));
-assert.equal(typeof ompMod.default, "function", "OMP adapter loads and exports a factory");
-assert.equal(typeof piMod.default, "function", "Pi adapter loads and exports a factory");
+assert.equal(typeof ompMod.default, "function", "OMP universal adapter loads and exports a factory");
+assert.equal(typeof piMod.default, "function", "Pi universal adapter loads and exports a factory");
 
 // restore timers
 globalThis.setInterval = realSetInterval;
