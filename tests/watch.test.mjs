@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseInterval, parseWatchCommand, WATCH_DEFAULT_SECONDS, WATCH_TICK_PROMPT } from "../skills/handoff-go/watch.mjs";
-import watchAdapter from "../skills/handoff-go/adapters/watch.mjs";
+import watchAdapter, { getDurableStateFingerprint } from "../skills/handoff-go/adapters/watch.js";
 
 // Patch global timers once so raw fallback timer usage (e.g. Pi) is observable.
 const realSetInterval = globalThis.setInterval;
@@ -47,7 +47,7 @@ function emit(env, name, event) {
 
 async function run(adapter, text, source = "interactive", opts = {}) {
   const env = makeEnv(opts.shape ?? "managed");
-  adapter(env.api);
+  adapter(env.api, opts);
   emit(env, "session_start", {});
   const inputResult = await emit(env, "input", { text, source });
   if (opts.shutdown !== false) emit(env, "session_shutdown", {});
@@ -82,7 +82,7 @@ for (const shape of ["managed", "fallback"]) {
   assert.equal(ctxOnlyResult, undefined, `${shape}: ctx-only fields not handled`);
 
   // interactive event.text="go watch" activates + one immediate wake + consumed.
-  const r = await run(watchAdapter, "go watch", "interactive", { shape });
+  const r = await run(watchAdapter, "go watch", "interactive", { shape, probe: () => "fp1" });
   assert.equal(r.env.sent.length, 1, `${shape}: exactly one immediate wake`);
   assert.ok(r.env.sent[0].msg.content.includes(WATCH_TICK_PROMPT.slice(0, 30)), `${shape}: tick prompt injected`);
   assert.deepEqual(r.inputResult, handled, `${shape}: recognized command consumed`);
@@ -96,30 +96,30 @@ for (const shape of ["managed", "fallback"]) {
   }
 
   // custom interval >=60s
-  const r2 = await run(watchAdapter, "go watch 5m", "interactive", { shape });
+  const r2 = await run(watchAdapter, "go watch 5m", "interactive", { shape, probe: () => "fp1" });
   const im2 = shape === "managed" ? r2.env.ctxIntervals[0]?.ms : globalThis.__hgIntervals.at(-1)?.ms;
   assert.equal(im2, 300000, `${shape}: 5m interval`);
 
   // below-60s is rejected but consumed (no activation, still handled)
-  const r3 = await run(watchAdapter, "go watch 30s", "interactive", { shape });
+  const r3 = await run(watchAdapter, "go watch 30s", "interactive", { shape, probe: () => "fp1" });
   assert.deepEqual(r3.inputResult, handled, `${shape}: invalid interval consumed`);
   assert.equal(r3.env.sent.length, 0, `${shape}: invalid interval does not wake`);
 
   // event.source="extension" is NOT consumed and does NOT reactivate
-  const r4 = await run(watchAdapter, "go watch", "extension", { shape });
+  const r4 = await run(watchAdapter, "go watch", "extension", { shape, probe: () => "fp1" });
   assert.equal(r4.env.sent.length, 0, `${shape}: injected wake not re-activated`);
   assert.equal(r4.inputResult, undefined, `${shape}: injected wake continues normally`);
 
   // busy agent does not overlap
-  const b = await run(watchAdapter, "go watch", "interactive", { shape, shutdown: false });
-  const tickFn = shape === "managed" ? b.env.ctxIntervals[0]?.fn : globalThis.__hgIntervals.at(-1)?.fn;
+  const b = await run(watchAdapter, "go watch", "interactive", { shape, shutdown: false, probe: () => "changed-fp" });
   b.env.ctx.isIdle = () => false;
+  const tickFn = shape === "managed" ? b.env.ctxIntervals[0]?.fn : globalThis.__hgIntervals.at(-1)?.fn;
   tickFn(); // fire tick while busy
   assert.equal(b.env.sent.length, 1, `${shape}: busy tick does not overlap`);
 
   // stop consumes and clears the timer
   const s = makeEnv(shape);
-  watchAdapter(s.api);
+  watchAdapter(s.api, { probe: () => "fp1" });
   emit(s, "session_start", {});
   await emit(s, "input", { text: "go watch", source: "interactive" });
   const clearedBefore = shape === "managed" ? s.ctxCleared.length : globalThis.__hgCleared.length;
@@ -130,18 +130,72 @@ for (const shape of ["managed", "fallback"]) {
   assert.ok(clearedAfter > clearedBefore, `${shape}: stop clears timer`);
 }
 
+// ---- Durable-state fingerprint wake gate and watermark tests ----
+{
+  let currentFp = "fp_init";
+  const probe = () => currentFp;
+  const env = makeEnv("managed");
+  watchAdapter(env.api, { probe });
+  emit(env, "session_start", {});
+  await emit(env, "input", { text: "go watch", source: "interactive" });
+  assert.equal(env.sent.length, 1, "immediate first go runs");
+
+  // Allow promise chain to settle and converge baseline to "fp_init"
+  await new Promise((r) => setTimeout(r, 10));
+
+  // Next ticks with same fingerprint -> dormant (no new turn)
+  const tickFn = env.ctxIntervals[0].fn;
+  tickFn();
+  assert.equal(env.sent.length, 1, "same fingerprint -> no sendMessage (stays dormant)");
+  tickFn();
+  assert.equal(env.sent.length, 1, "repeated same fingerprint -> stays dormant");
+
+  // Changed fingerprint -> wakes one normal go
+  currentFp = "fp_changed";
+  tickFn();
+  assert.equal(env.sent.length, 2, "changed fingerprint -> wakes one normal go");
+
+  // State changes DURING turn: wakeFp was "fp_changed", but before settle state moves to "fp_in_flight"
+  currentFp = "fp_in_flight";
+  await new Promise((r) => setTimeout(r, 10)); // settles with mismatch
+  // Baseline did NOT converge to fp_in_flight; next tick must still wake
+  tickFn();
+  assert.equal(env.sent.length, 3, "state changed during turn -> next tick still wakes");
+  await new Promise((r) => setTimeout(r, 10)); // settles
+
+  // Stable before and after turn: wakeFp and settledFp match -> converges to dormant
+  currentFp = "fp_stable";
+  tickFn(); // wakes with fp_stable
+  assert.equal(env.sent.length, 4, "wakes on change to fp_stable");
+  await new Promise((r) => setTimeout(r, 10)); // settles with fp_stable -> converges
+  tickFn(); // next tick with fp_stable
+  assert.equal(env.sent.length, 4, "stable before/after -> converges and stays dormant");
+
+  // Fail-open rule: probe returns null (error / auth / truncation) -> must wake
+  currentFp = null;
+  tickFn();
+  assert.equal(env.sent.length, 5, "probe failure (null) -> fails open and wakes");
+  await new Promise((r) => setTimeout(r, 10)); // settles
+
+  // Stop -> no further wakes even if state changes
+  await emit(env, "input", { text: "go watch stop", source: "interactive" });
+  currentFp = "fp_new";
+  tickFn();
+  assert.equal(env.sent.length, 5, "stopped watcher does not wake on tick");
+}
+
 // Reachability: universal adapter `import "../watch.mjs"` from `.omp/extensions/`
 // and `.pi/extensions/` resolves to `.omp/watch.mjs` and `.pi/watch.mjs`.
 const reachRoot = mkdtempSync(join(tmpdir(), "hgwatch-"));
 const reachCopy = (from, to) => cpSync(join(process.cwd(), from), join(reachRoot, to), { recursive: true });
 mkdirSync(join(reachRoot, ".omp/extensions"), { recursive: true });
 mkdirSync(join(reachRoot, ".pi/extensions"), { recursive: true });
-reachCopy("skills/handoff-go/adapters/watch.mjs", ".omp/extensions/handoff-go-watch.mjs");
-reachCopy("skills/handoff-go/adapters/watch.mjs", ".pi/extensions/handoff-go-watch.mjs");
+reachCopy("skills/handoff-go/adapters/watch.js", ".omp/extensions/handoff-go-watch.js");
+reachCopy("skills/handoff-go/adapters/watch.js", ".pi/extensions/handoff-go-watch.js");
 reachCopy("skills/handoff-go/watch.mjs", ".omp/watch.mjs");
 reachCopy("skills/handoff-go/watch.mjs", ".pi/watch.mjs");
-const ompMod = await import(pathToFileURL(join(reachRoot, ".omp/extensions/handoff-go-watch.mjs")));
-const piMod = await import(pathToFileURL(join(reachRoot, ".pi/extensions/handoff-go-watch.mjs")));
+const ompMod = await import(pathToFileURL(join(reachRoot, ".omp/extensions/handoff-go-watch.js")));
+const piMod = await import(pathToFileURL(join(reachRoot, ".pi/extensions/handoff-go-watch.js")));
 assert.equal(typeof ompMod.default, "function", "OMP universal adapter loads and exports a factory");
 assert.equal(typeof piMod.default, "function", "Pi universal adapter loads and exports a factory");
 
