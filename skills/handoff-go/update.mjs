@@ -133,6 +133,31 @@ function replacePinLine(inner, label, value) {
   });
 }
 
+// Upgrade legacy single-command routing to explicitly include `go update` so
+// fresh sessions discover maintenance directly from trusted governance.
+function upgradeCommandRouting(inner) {
+  const routingMatches = [...inner.matchAll(/^[ \t]*For the exact ordinary-text message.*$/gm)];
+  if (routingMatches.length === 0) return inner;
+  if (routingMatches.length > 1) {
+    throw conflicts(
+      `ambiguous command routing: expected at most one ordinary routing sentence in managed block, found ${routingMatches.length}`,
+    );
+  }
+  const currentRe = /^[ \t]*For the exact ordinary-text messages `go` and `go update`,\s*use\s*(the\s*(?:pinned\s*)?Handoff Go skill above)/m;
+  if (currentRe.test(inner)) return inner;
+
+  const legacyRe = /^[ \t]*For the exact ordinary-text message `go`,\s*use\s*(the\s*(?:pinned\s*)?Handoff Go skill above)\./m;
+  if (legacyRe.test(inner)) {
+    return inner.replace(
+      legacyRe,
+      "For the exact ordinary-text messages `go` and `go update`, use $1 (`go update` is maintenance only, never workflow state).",
+    );
+  }
+  throw conflicts(
+    "unrecognized ordinary command routing sentence in managed block; cannot determine upgrade compatibility safely",
+  );
+}
+
 export function updateManagedBlock(text, { ref, version = null }) {
   if (!ref || /^(main|master|develop|trunk|HEAD)$/i.test(ref)) {
     throw conflicts(`ref must be an immutable commit or tag, got: ${ref}`);
@@ -142,15 +167,8 @@ export function updateManagedBlock(text, { ref, version = null }) {
 
   let next = replacePinLine(inner, "Immutable ref", ref);
   if (version !== null) next = replacePinLine(next, "Version", version);
+  next = upgradeCommandRouting(next);
 
-  // Upgrade legacy single-command routing to explicitly include `go update` so
-  // fresh sessions discover maintenance directly from trusted governance.
-  if (!/`go update`/.test(next)) {
-    next = next.replace(
-      /For the exact ordinary-text message `go`,\s*use\s*(the\s*(?:pinned\s*)?Handoff Go skill above)\./m,
-      "For the exact ordinary-text messages `go` and `go update`, use $1 (`go update` is maintenance only, never workflow state)."
-    );
-  }
   const out = `${pre}${START}${next}${END}${post}`;
   const after = parseManagedBlock(out);
   if (after.immutableRef !== ref) throw conflicts("Immutable ref rewrite did not apply");
@@ -684,23 +702,28 @@ function report(ev, { verbose = false } = {}) {
     }
     return;
   }
-  console.log(
-    [
-      "PREPARED (internal status — not a durable protocol state)",
-      `Old ref: ${short(ev.oldRef)}`,
-      `New ref: ${short(ev.newRef)}`,
-      `Branch: ${ev.proposalBranch}${ev.dryRun ? " (dry run, not committed)" : ""}`,
+  const preparedLines = [
+    "PREPARED (internal status — not a durable protocol state)",
+    `Old ref: ${short(ev.oldRef)}`,
+    `New ref: ${short(ev.newRef)}`,
+    `Branch: ${ev.proposalBranch}${ev.dryRun ? " (dry run, not committed)" : ""}`,
+  ];
+  if (verbose) {
+    preparedLines.push(
       `Changed: ${ev.changedPaths.join(", ")}`,
       `Transitions inside updater: ${ev.transitions.insideUpdater}`,
-      "",
-      "Persist (2 external transitions), then report GO_UPDATE_READY with the PR:",
-      `  git push -u origin ${ev.proposalBranch}`,
-      `  gh pr create --base <trusted-default-branch> --head ${ev.proposalBranch} --title "chore(handoff-go): update ${short(ev.oldRef)} -> ${short(ev.newRef)}" --body-file <evidence.md>`,
-      "",
-      "Emit GO_UPDATE_READY only after both succeed; on failure report",
-      "GO_UPDATE_CONFLICT/GO_UPDATE_ERROR and never claim a persisted update.",
-    ].join("\n"),
+    );
+  }
+  preparedLines.push(
+    "",
+    "Persist (2 external transitions), then report GO_UPDATE_READY with the PR:",
+    `  git push -u origin ${ev.proposalBranch}`,
+    `  gh pr create --base <trusted-default-branch> --head ${ev.proposalBranch} --title "chore(handoff-go): update ${short(ev.oldRef)} -> ${short(ev.newRef)}" --body-file <evidence.md>`,
+    "",
+    "Emit GO_UPDATE_READY only after both succeed; on failure report",
+    "GO_UPDATE_CONFLICT/GO_UPDATE_ERROR and never claim a persisted update.",
   );
+  console.log(preparedLines.join("\n"));
 }
 
 // One runnable check for the non-trivial block rewrite and update decisions.
@@ -755,6 +778,19 @@ function demo() {
     "legacy command routing upgraded",
   );
   assert(upgradedRouting.includes("Load this block from main."), "surrounding prose preserved");
+
+  // If `go update` is mentioned in unrelated prose, the legacy routing sentence still upgrades.
+  const noteAgents = legacyRoutingAgents.replace("Load this block from main.", "Note: `go update` exists.\nLoad this block from main.");
+  const upgradedNote = updateManagedBlock(noteAgents, { ref: "c".repeat(40) });
+  assert(upgradedNote.includes("For the exact ordinary-text messages `go` and `go update`"), "upgrades even if go update appears in other prose");
+
+  // Multiple routing sentences fail closed.
+  const multiRouting = legacyRoutingAgents.replace("Load this block from main.", "For the exact ordinary-text message `go`, use foo.");
+  throws(() => updateManagedBlock(multiRouting, { ref: "c".repeat(40) }), /ambiguous command routing/, "multiple routing sentences");
+
+  // Unrecognized routing sentence fails closed.
+  const weirdRouting = agents.replace("Unrelated trailing governance prose", "For the exact ordinary-text message `custom`, use skill.");
+  throws(() => updateManagedBlock(weirdRouting, { ref: "c".repeat(40) }), /unrecognized ordinary command routing/, "unrecognized routing sentence");
 
   throws(() => parseManagedBlock("no block here"), /not opted in/, "missing block");
   throws(() => parseManagedBlock(agents + agents), /exactly one managed block/, "duplicate block");
@@ -836,6 +872,7 @@ function demo() {
   console.log = (line) => captured.push(String(line));
   try {
     report({ result: "PREPARED", oldRef: "a".repeat(40), newRef: "b".repeat(40), proposalBranch: `${BRANCH_PREFIX}bbbbbbbb`, changedPaths: ["AGENTS.md"], transitions: { insideUpdater: 4 } });
+    report({ result: "PREPARED", oldRef: "a".repeat(40), newRef: "b".repeat(40), proposalBranch: `${BRANCH_PREFIX}bbbbbbbb`, changedPaths: ["AGENTS.md"], transitions: { insideUpdater: 4 } }, { verbose: true });
     report({ result: "REUSE", oldRef: "a".repeat(40), newRef: "b".repeat(40), existingProposal: { url: "https://example.invalid/pr/1" } });
     report({ result: "UP_TO_DATE", oldRef: "a".repeat(40) });
     report({ result: "UP_TO_DATE", oldRef: "a".repeat(40), provenance: { repository: "o/r" }, transitions: { insideUpdater: 2 } }, { verbose: true });
@@ -843,13 +880,16 @@ function demo() {
     console.log = realLog;
   }
   assert(captured[0].split("\n")[0].startsWith("PREPARED"), "prepared report is not a protocol state");
-  assert(!captured[0].split("\n")[0].includes("GO_UPDATE_READY"), "prepared report never leads with GO_UPDATE_READY");
-  assert(captured[1].split("\n")[0] === "GO_UPDATE_READY", "reuse reports the standard outcome");
-  assert(captured[1].includes("Old ref: aaaaaaaa"), "reuse reports short old ref by default");
-  assert(captured[1].includes("PR: https://example.invalid/pr/1"), "reuse reports the durable PR");
-  assert(captured[1].includes("Next Actor: ARCHITECT"), "reuse routes to the Architect");
-  assert(captured[2] === `GO_UP_TO_DATE\nCurrent ref: ${"a".repeat(8)}`, "quiet up-to-date output matches target format");
-  assert(captured[3].includes(`Current ref: ${"a".repeat(40)}`) && captured[3].includes("Provenance:"), "verbose up-to-date output includes diagnostic fields");
+  assert(!captured[0].includes("Changed:"), "quiet prepared report omits Changed paths");
+  assert(!captured[0].includes("Transitions inside updater:"), "quiet prepared report omits Transitions");
+  assert(captured[1].includes("Changed: AGENTS.md"), "verbose prepared report includes Changed paths");
+  assert(captured[1].includes("Transitions inside updater: 4"), "verbose prepared report includes Transitions");
+  assert(captured[2].split("\n")[0] === "GO_UPDATE_READY", "reuse reports the standard outcome");
+  assert(captured[2].includes("Old ref: aaaaaaaa"), "reuse reports short old ref by default");
+  assert(captured[2].includes("PR: https://example.invalid/pr/1"), "reuse reports the durable PR");
+  assert(captured[2].includes("Next Actor: ARCHITECT"), "reuse routes to the Architect");
+  assert(captured[3] === `GO_UP_TO_DATE\nCurrent ref: ${"a".repeat(8)}`, "quiet up-to-date output matches target format");
+  assert(captured[4].includes(`Current ref: ${"a".repeat(40)}`) && captured[4].includes("Provenance:"), "verbose up-to-date output includes diagnostic fields");
 
   // The pinned ref reaches `git fetch`, so the launcher revalidates it too.
   throws(() => materializePinned("main", []), /floating ref is not executable authority|floating ref executable authority/, "floating ref is not executable authority");
