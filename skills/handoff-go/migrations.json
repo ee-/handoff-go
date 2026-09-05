@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "operations": [
+    {
+      "type": "replace_routing",
+      "match": "For the exact ordinary-text message `go`, use the pinned Handoff Go skill above.",
+      "replace": "For the exact ordinary-text messages `go` and `go update`, use the pinned Handoff Go skill above (`go update` is maintenance only, never workflow state)."
+    }
+  ]
+}

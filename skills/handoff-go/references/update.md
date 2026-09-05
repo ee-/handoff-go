@@ -75,9 +75,10 @@ One invocation does all mechanically unique work and stops at the first failure:
    closed if that head moved during preparation;
 8. verify installed bytes and enabled runtime copies against `OLD`; a drifted or
    unrecognized copy fails closed — never overwrite local edits;
-9. install exact `NEW` skill bytes, rewrite only managed pin/version fields,
-   and upgrade command routing in the managed block to explicitly include
-   `go update` if previously missing;
+9. install exact `NEW` skill bytes, rewrite managed pin/version fields, and
+   apply bounded declarative migrations (`migrations.json`) defined by the
+   target version over the managed block (e.g. routing sentence or versioned
+   managed fields); unrecognized or unsupported migrations fail closed;
 10. refresh recognized enabled watch copies, migrating a legacy `.mjs` entry to
     the `.js` entry; absent integration stays absent;
 11. validate the prepared state, reject any change outside managed scope, and
@@ -163,6 +164,30 @@ not appear by default. Failures output only one actionable reason/remediation.
 Detailed evidence is available on demand:
 - `--verbose` — displays full commit SHAs, provenance metadata, and transition counts;
 - `--json` — emits machine-readable evidence for scripting and PR creation.
+
+### Forward-compatible declarative migrations
+
+When a governed update transitions from an older Handoff Go version to a newer
+one, the target version may declare managed-bootstrap schema or routing
+transformations in `skills/handoff-go/migrations.json`.
+
+The updater reads this file strictly as declarative data from the materialized
+immutable `NEW` commit — never from working-tree files, and never as executable
+code.
+
+Allowed operations are bounded strictly to the Handoff Go managed block:
+- `replace_routing`: replaces a uniquely identified legacy routing sentence with
+  the target routing sentence (idempotent no-op if already at target);
+- `set_field`: sets or updates an allowed managed field (`Version`, `Skill`,
+  `Trusted default branch`, `Owner`, `Architect`, `Coder`);
+- `delete_field`: removes an explicitly identified managed field (e.g. `Pre-release`).
+
+Safety boundaries:
+- unsupported manifest schema version (`version > 1`) fails closed;
+- unrecognized operation types fail closed;
+- multiple or ambiguous routing declarations fail closed;
+- unrecognized routing sentences fail closed;
+- bytes outside `<!-- handoff-go:start/end -->` are never touched and must remain byte-for-byte identical.
 
 Only a same-repository pull request onto the trusted default branch can be an
 update proposal: a fork PR may use any head branch name and never carries update

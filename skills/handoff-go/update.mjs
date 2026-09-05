@@ -133,6 +133,100 @@ function replacePinLine(inner, label, value) {
   });
 }
 
+function normalizeSentence(s) {
+  return String(s || "").trim().replace(/\s+/g, " ");
+}
+
+const ALLOWED_MANAGED_FIELDS = new Set(["Version", "Skill", "Trusted default branch", "Owner", "Architect", "Coder", "Pre-release"]);
+
+// Declarative forward-compatible migrations applied over the managed block.
+// Reads strictly data from the target version; never executes code.
+export function applyDeclarativeMigrations(inner, manifest) {
+  if (!manifest) return inner;
+  if (typeof manifest !== "object" || manifest === null) {
+    throw conflicts("malformed migrations manifest: expected an object");
+  }
+  const version = manifest.version;
+  if (typeof version !== "number" || !Number.isInteger(version)) {
+    throw conflicts("invalid migrations manifest: version must be an integer");
+  }
+  if (version !== 1) {
+    throw conflicts(`unsupported migration schema version ${version}; this updater supports up to version 1; upgrade Handoff Go via governed bridge`);
+  }
+  const ops = manifest.operations;
+  if (!Array.isArray(ops)) {
+    throw conflicts("invalid migrations manifest: operations must be an array");
+  }
+
+  let next = inner;
+  for (const op of ops) {
+    if (!op || typeof op !== "object") {
+      throw conflicts("invalid migration operation: expected an object");
+    }
+    switch (op.type) {
+      case "replace_routing": {
+        const { match, replace } = op;
+        if (typeof match !== "string" || typeof replace !== "string" || !match.trim() || !replace.trim()) {
+          throw conflicts("replace_routing requires non-empty string match and replace fields");
+        }
+        const routingMatches = [...next.matchAll(/^[ \t]*For the exact ordinary-text message.*$/gm)];
+        if (routingMatches.length === 0) break;
+        if (routingMatches.length > 1) {
+          throw conflicts(`ambiguous command routing: expected at most one ordinary routing sentence in managed block, found ${routingMatches.length}`);
+        }
+        const currentSentence = routingMatches[0][0];
+        const normCurrent = normalizeSentence(currentSentence);
+        const normMatch = normalizeSentence(match);
+        const normReplace = normalizeSentence(replace);
+
+        if (normCurrent === normReplace) break;
+        if (normCurrent === normMatch) {
+          next = next.replace(currentSentence, replace.trim());
+          break;
+        }
+        throw conflicts(`unrecognized ordinary command routing sentence in managed block: ${currentSentence}; cannot apply replace_routing safely`);
+      }
+      case "set_field": {
+        const { field, value } = op;
+        if (typeof field !== "string" || !ALLOWED_MANAGED_FIELDS.has(field)) {
+          throw conflicts(`set_field: disallowed or unknown managed field: ${field}`);
+        }
+        if (typeof value !== "string") {
+          throw conflicts(`set_field: value must be a string for field ${field}`);
+        }
+        const re = new RegExp(`^([ \\t]*-[ \\t]*${field}:[ \\t]*)(.+)$`, "m");
+        if (re.test(next)) {
+          next = next.replace(re, (_all, lead, orig) => {
+            const quoted = /^\s*[`"']/.test(orig);
+            return `${lead}${quoted ? "`" : ""}${value}${quoted ? "`" : ""}`;
+          });
+        } else {
+          const lastFieldMatch = [...next.matchAll(/^[ \t]*-[ \t]*[A-Za-z ]+:[ \t]*.+$/gm)].pop();
+          if (lastFieldMatch) {
+            const idx = lastFieldMatch.index + lastFieldMatch[0].length;
+            next = next.slice(0, idx) + `\n- ${field}: \`${value}\`` + next.slice(idx);
+          } else {
+            next = next + `\n- ${field}: \`${value}\``;
+          }
+        }
+        break;
+      }
+      case "delete_field": {
+        const { field } = op;
+        if (typeof field !== "string" || !ALLOWED_MANAGED_FIELDS.has(field)) {
+          throw conflicts(`delete_field: disallowed or unknown managed field: ${field}`);
+        }
+        const re = new RegExp(`^[ \\t]*-[ \\t]*${field}:[ \\t]*.+$\\n?`, "m");
+        next = next.replace(re, "");
+        break;
+      }
+      default:
+        throw conflicts(`unrecognized migration operation type: ${op.type}`);
+    }
+  }
+  return next;
+}
+
 // Upgrade legacy single-command routing to explicitly include `go update` so
 // fresh sessions discover maintenance directly from trusted governance.
 function upgradeCommandRouting(inner) {
@@ -158,7 +252,7 @@ function upgradeCommandRouting(inner) {
   );
 }
 
-export function updateManagedBlock(text, { ref, version = null }) {
+export function updateManagedBlock(text, { ref, version = null, migrations = null }) {
   if (!ref || /^(main|master|develop|trunk|HEAD)$/i.test(ref)) {
     throw conflicts(`ref must be an immutable commit or tag, got: ${ref}`);
   }
@@ -167,8 +261,10 @@ export function updateManagedBlock(text, { ref, version = null }) {
 
   let next = replacePinLine(inner, "Immutable ref", ref);
   if (version !== null) next = replacePinLine(next, "Version", version);
+  if (migrations) {
+    next = applyDeclarativeMigrations(next, migrations);
+  }
   next = upgradeCommandRouting(next);
-
   const out = `${pre}${START}${next}${END}${post}`;
   const after = parseManagedBlock(out);
   if (after.immutableRef !== ref) throw conflicts("Immutable ref rewrite did not apply");
@@ -582,9 +678,22 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
     const beforeAgents = readFileSync(agentsPath, "utf8");
     rmSync(wtSkill, { recursive: true, force: true });
     cpSync(newSkill, wtSkill, { recursive: true });
+    let migrations = null;
+    const migrationsFile = join(newSkill, "migrations.json");
+    if (existsSync(migrationsFile)) {
+      try {
+        migrations = JSON.parse(readFileSync(migrationsFile, "utf8"));
+      } catch (e) {
+        throw conflicts(`malformed migrations.json in target Handoff Go version: ${firstLine(e)}`);
+      }
+    }
     writeFileSync(
       agentsPath,
-      updateManagedBlock(beforeAgents, { ref: newRef, version: trusted.version ? ev.version : null }),
+      updateManagedBlock(beforeAgents, {
+        ref: newRef,
+        version: trusted.version ? ev.version : null,
+        migrations,
+      }),
     );
 
     for (const [rel, src] of plan.refresh) {
@@ -792,6 +901,50 @@ function demo() {
   const weirdRouting = agents.replace("Unrelated trailing governance prose", "For the exact ordinary-text message `custom`, use skill.");
   throws(() => updateManagedBlock(weirdRouting, { ref: "c".repeat(40) }), /unrecognized ordinary command routing/, "unrecognized routing sentence");
 
+
+  // Declarative migrations: replace_routing
+  const legacyBlock = `- Version: 1.0.0\n- Immutable ref: \`aaaa\`\nFor the exact ordinary-text message \`go\`, use the pinned Handoff Go skill above.\nLoad this block.`;
+  const routeManifest = {
+    version: 1,
+    operations: [
+      {
+        type: "replace_routing",
+        match: "For the exact ordinary-text message `go`, use the pinned Handoff Go skill above.",
+        replace: "For the exact ordinary-text messages `go` and `go update`, use the pinned Handoff Go skill above (`go update` is maintenance only, never workflow state).",
+      },
+    ],
+  };
+  const migratedRoute = applyDeclarativeMigrations(legacyBlock, routeManifest);
+  assert(migratedRoute.includes("For the exact ordinary-text messages `go` and `go update`"), "replace_routing applied");
+  assert(applyDeclarativeMigrations(migratedRoute, routeManifest) === migratedRoute, "replace_routing is idempotent");
+
+  // Declarative migrations: set_field and delete_field
+  const fieldManifest = {
+    version: 1,
+    operations: [
+      { type: "set_field", field: "Version", value: "2.0.0" },
+      { type: "set_field", field: "Owner", value: "@new-owner" },
+      { type: "delete_field", field: "Pre-release" },
+    ],
+  };
+  const blockWithPre = `- Version: \`1.0.0\`\n- Pre-release: dogfood\n- Immutable ref: \`aaaa\`\n- Owner: \`@old-owner\`\n`;
+  const migratedFields = applyDeclarativeMigrations(blockWithPre, fieldManifest);
+  assert(migratedFields.includes("- Version: `2.0.0`"), "set_field updated Version");
+  assert(migratedFields.includes("- Owner: `@new-owner`"), "set_field updated Owner");
+  assert(!migratedFields.includes("Pre-release"), "delete_field removed Pre-release");
+
+  // Declarative migrations fail-closed rules
+  throws(() => applyDeclarativeMigrations(legacyBlock, { version: 2, operations: [] }), /unsupported migration schema version/, "unsupported schema version");
+  throws(() => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "run_shell" }] }), /unrecognized migration operation type/, "unrecognized op type");
+  throws(() => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "set_field", field: "UnknownField", value: "x" }] }), /disallowed or unknown managed field/, "disallowed field");
+  throws(() => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "delete_field", field: "UnknownField" }] }), /disallowed or unknown managed field/, "disallowed delete field");
+
+  // updateManagedBlock with declarative migrations
+  const integratedAgents = agents.replace("Unrelated trailing governance prose that MUST survive.", "For the exact ordinary-text message `go`, use the pinned Handoff Go skill above.\nKeep this line.");
+  const migratedBlock = updateManagedBlock(integratedAgents, { ref: "d".repeat(40), migrations: routeManifest });
+  assert(migratedBlock.includes("For the exact ordinary-text messages `go` and `go update`"), "updateManagedBlock integrated migrations");
+  assert(migratedBlock.includes("Keep this line."), "surrounding prose preserved");
+  assert(migratedBlock.includes("# Repo") && migratedBlock.includes("Footer text outside"), "outside block preserved");
   throws(() => parseManagedBlock("no block here"), /not opted in/, "missing block");
   throws(() => parseManagedBlock(agents + agents), /exactly one managed block/, "duplicate block");
   const dupSkill = agents.replace(/- Skill:.*/, "- Skill: `a/SKILL.md`\n- Skill: `b/SKILL.md`");
