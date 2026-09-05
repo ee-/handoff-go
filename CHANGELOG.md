@@ -26,6 +26,13 @@
   `AGENTS.md`, and open proposals, so a contributor-controlled checkout can
   never supply the pin, Skill path, or trusted branch; the transaction also
   fails closed if the trusted head moves mid-preparation;
+- governance executable provenance = governance data provenance: `update.mjs run`
+  resolves the trusted default-branch bootstrap, materializes the exact Handoff Go
+  skill tree pinned there from a content-addressed git object store, and executes
+  its `update.mjs prepare`; current checkout bytes, stale feature branches, or
+  prior session paths never supply executable authority, and LLM preflight
+  (upstream HEAD, open PR, OLD/NEW, reuse) is eliminated in favor of the single
+  deterministic command;
 - `prepare` reports only the internal status `PREPARED`; `GO_UPDATE_READY` is
   emitted by the Coder after the proposal PR is durably created, and an existing
   same-`NEW` proposal is reused under that same standard outcome;

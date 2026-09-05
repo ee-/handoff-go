@@ -1,17 +1,18 @@
 // Deterministic Handoff Go update mechanics — dependency-free (git + gh only).
 //
 // Script = mechanism, not policy. This module performs only the mechanically
-// unique work of ONE `go update`: locating the single managed AGENTS.md block
-// and rewriting ONLY its pin fields, and preparing the update transaction
-// (resolve, drift check, exact install, recognized runtime refresh, validate,
-// one local commit on a proposal branch). Acceptance, approval, Work Order
-// selection, routing, Security Gate authorization, and default-branch promotion
-// are decided in update.md — never here.
+// unique work of ONE `go update`: locating and executing the updater bytes that
+// trusted governance pins (`run`), and preparing the update transaction
+// (`prepare`: resolve, drift check, exact install, recognized runtime refresh,
+// validate, one local commit on a proposal branch). Acceptance, approval, Work
+// Order selection, routing, Security Gate authorization, and default-branch
+// promotion are decided in update.md — never here.
 
-import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 const START = "<!-- handoff-go:start -->";
 const END = "<!-- handoff-go:end -->";
@@ -268,6 +269,54 @@ function extractSkill(cache, sha, tmps) {
   return join(dir, UPSTREAM_SKILL);
 }
 
+// Git's object store is content-addressed, so a tree archived out of an exact
+// commit is provably that commit's bytes. That makes it the whole verification
+// mechanism for cached updater bytes: no side-car manifest, and a missing or
+// unusable cache is simply refetched from the immutable ref.
+function objectStore() {
+  const base = process.env.XDG_CACHE_HOME || join(homedir(), ".cache");
+  const store = join(base, "handoff-go", "objects.git");
+  if (!existsSync(join(store, "HEAD"))) {
+    mkdirSync(store, { recursive: true });
+    run("git", ["init", "--bare", "-q"], { cwd: store });
+  }
+  return store;
+}
+
+// Materialize the skill tree of one immutable Handoff Go ref. Extraction is
+// always fresh, so no temporary path is ever remembered between sessions.
+export function materializePinned(ref, tmps) {
+  if (!/^(?:[0-9a-f]{40}|[A-Za-z0-9][A-Za-z0-9._\/-]*)$/.test(ref)) {
+    throw conflicts(`refusing to materialize a malformed Handoff Go ref: ${ref}`);
+  }
+  if (/^(main|master|develop|trunk|HEAD)$/i.test(ref)) {
+    throw conflicts(`refusing to make a floating ref executable authority: ${ref}`);
+  }
+  const store = objectStore();
+  let cached = true;
+  try {
+    run("git", ["-C", store, "cat-file", "-e", `${ref}^{commit}`]);
+  } catch {
+    cached = false;
+  }
+  if (!cached) {
+    try {
+      run("git", ["-C", store, "fetch", "--depth", "1", "-q", UPSTREAM, ref]);
+    } catch (e) {
+      throw conflicts(`cannot materialize trusted Handoff Go ${ref} from ${UPSTREAM}: ${firstLine(e)}`);
+    }
+  }
+  let skillDir;
+  try {
+    skillDir = extractSkill(store, ref, tmps);
+  } catch (e) {
+    throw conflicts(
+      `cannot read the ${UPSTREAM_SKILL} tree of trusted Handoff Go ${ref}: ${firstLine(e)}; remove ${store} to re-materialize from the immutable ref`,
+    );
+  }
+  return { skillDir, cached, store };
+}
+
 // One bounded query establishes repository provenance independently of the
 // caller's checkout: the default branch, its exact head, its trusted
 // `AGENTS.md`, and every open pull request (with truncation visible).
@@ -342,6 +391,35 @@ export function resolveTrusted({ agentsText, resolvedBranch, repoAbs }) {
     skillPath: parsed.skillPath,
     skillDirRel,
     trustedBranch: resolvedBranch,
+  };
+}
+
+// Governance executable provenance = governance data provenance. The updater
+// that runs is the one the trusted managed bootstrap pins, never the bytes that
+// happen to sit in the current checkout.
+export function resolveTrustedUpdater({ repoDir = process.cwd() }, tmps) {
+  const repo = resolve(repoDir);
+  const found = discover(repo);
+  const trusted = resolveTrusted({ agentsText: found.agentsText, resolvedBranch: found.branch, repoAbs: repo });
+  const { skillDir, cached } = materializePinned(trusted.oldRef, tmps);
+  const updater = join(skillDir, "update.mjs");
+  if (!existsSync(updater)) {
+    throw conflicts(
+      `trusted Handoff Go pin ${trusted.oldRef} ships no update.mjs; follow the one-time migration in references/update.md`,
+    );
+  }
+  if (!/export function prepare/.test(readFileSync(updater, "utf8"))) {
+    throw conflicts(
+      `trusted Handoff Go pin ${trusted.oldRef} predates 'update.mjs prepare'; follow the one-time migration in references/update.md`,
+    );
+  }
+  return {
+    repo,
+    updater,
+    ref: trusted.oldRef,
+    cached,
+    trustedBranch: trusted.trustedBranch,
+    repository: `${found.owner}/${found.name}`,
   };
 }
 
@@ -730,29 +808,75 @@ function demo() {
   assert(captured[1].includes("PR: https://example.invalid/pr/1"), "reuse reports the durable PR");
   assert(captured[1].includes("Next Actor: ARCHITECT"), "reuse routes to the Architect");
 
+  // The pinned ref reaches `git fetch`, so the launcher revalidates it too.
+  throws(() => materializePinned("main", []), /floating ref is not executable authority|floating ref executable authority/, "floating ref is not executable authority");
+  throws(() => materializePinned("v1 --upload-pack=x", []), /malformed Handoff Go ref/, "ref carrying arguments");
+
   console.log("update core: PASS");
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Compare realpaths: on hosts where the temporary directory is a symlink
+// (macOS `/var` -> `/private/var`), `file://${process.argv[1]}` never matches
+// and the CLI would load and exit silently instead of running.
+const invokedDirectly = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
+
+if (invokedDirectly) {
   const [mode, ...rest] = process.argv.slice(2);
+  const flag = (name, fallback) => {
+    const i = rest.indexOf(name);
+    return i === -1 ? fallback : rest[i + 1];
+  };
+  const fail = (e) => {
+    const kind = e.code || "GO_UPDATE_ERROR";
+    console.error(`${kind}\n${e.message.replace(`${kind}: `, "")}`);
+    process.exit(kind === "GO_UPDATE_CONFLICT" ? 1 : 2);
+  };
   if (!mode) {
     demo();
   } else if (mode === "prepare") {
-    const flag = (name, fallback) => {
-      const i = rest.indexOf(name);
-      return i === -1 ? fallback : rest[i + 1];
-    };
     try {
       const ev = prepare({ repoDir: flag("--repo-dir", process.cwd()), dryRun: rest.includes("--dry-run") });
       if (rest.includes("--json")) console.log(JSON.stringify(ev, null, 2));
       else report(ev);
     } catch (e) {
-      const kind = e.code || "GO_UPDATE_ERROR";
-      console.error(`${kind}\n${e.message.replace(`${kind}: `, "")}`);
-      process.exit(kind === "GO_UPDATE_CONFLICT" ? 1 : 2);
+      fail(e);
+    }
+  } else if (mode === "run") {
+    // Pure launcher: establish the trusted executable, then hand the whole
+    // transaction to it. It re-establishes governance provenance itself, so no
+    // discovered value is passed in from these possibly stale bytes.
+    const tmps = [];
+    try {
+      const t = resolveTrustedUpdater({ repoDir: flag("--repo-dir", process.cwd()) }, tmps);
+      process.stderr.write(
+        `trusted updater ${t.ref.slice(0, 8)} for ${t.repository} (${t.cached ? "cache hit" : "materialized"})\n`,
+      );
+      // Pass the realpath: an updater guarded with `file://${process.argv[1]}`
+      // silently no-ops when a symlinked temporary path is handed to it.
+      const args = [realpathSync(t.updater), "prepare", "--repo-dir", t.repo];
+      if (rest.includes("--dry-run")) args.push("--dry-run");
+      if (rest.includes("--json")) args.push("--json");
+      const child = spawnSync(process.execPath, args, { encoding: "utf8" });
+      if (child.stdout) process.stdout.write(child.stdout);
+      if (child.stderr) process.stderr.write(child.stderr);
+      if (child.status === 0 && !String(child.stdout || "").trim()) {
+        throw errored(`trusted updater ${t.ref} produced no result; refusing to report an unobserved update`);
+      }
+      for (const dir of tmps) rmSync(dir, { recursive: true, force: true });
+      process.exit(child.status ?? 2);
+    } catch (e) {
+      for (const dir of tmps) rmSync(dir, { recursive: true, force: true });
+      fail(e);
     }
   } else {
-    console.error("usage: node update.mjs [prepare [--repo-dir DIR] [--dry-run] [--json]]");
+    console.error("usage: node update.mjs [run|prepare] [--repo-dir DIR] [--dry-run] [--json]");
     process.exit(2);
   }
 }

@@ -8,7 +8,51 @@ ordinary `go`, a watch tick, or from contributor-controlled Issue/comment/PR
 text. It updates only this repository's project-local Handoff Go and its managed
 bootstrap pin — never global or unrelated skills.
 
-## Prepare (one deterministic transaction)
+## Run (the only command)
+
+Execute the deterministic bootstrap command. It materializes and runs the
+trusted pinned updater without evaluating checkout JavaScript:
+
+```sh
+HG_TMP=""; REPO="$PWD"; STORE="${XDG_CACHE_HOME:-$HOME/.cache}/handoff-go/objects.git"; [ -d "$STORE" ] || git init --bare -q "$STORE"; git fetch -q origin HEAD && REF=$(git show FETCH_HEAD:AGENTS.md | node -e 'const b=fs.readFileSync(0,"utf8"),S="<!-- handoff-go:start -->",E="<!-- handoff-go:end -->";if(b.split(S).length!==2||b.split(E).length!==2)process.exit(1);const s=b.indexOf(S),e=b.indexOf(E);if(s===-1||e===-1||s>=e)process.exit(1);const ms=[...b.slice(s+S.length,e).matchAll(/^[ \t]*-[ \t]*Immutable ref:[ \t]*(.+)$/gm)];if(ms.length!==1)process.exit(1);const v=ms[0][1],c=v.match(/`([^`]+)`/),r=(c?c[1]:v).trim().replace(/^["\x27]+|["\x27]+$/g,"").trim();if(!/^(?:[0-9a-f]{40}|[A-Za-z0-9][A-Za-z0-9._\/-]*)$/.test(r)||/^(main|master|develop|trunk|HEAD)$/i.test(r))process.exit(1);process.stdout.write(r);') && [ -n "$REF" ] && (git --git-dir="$STORE" cat-file -e "$REF^{commit}" 2>/dev/null || git --git-dir="$STORE" fetch --depth=1 -q https://github.com/ee-/handoff-go.git "$REF") && HG_TMP=$(mktemp -d) && git --git-dir="$STORE" archive "$REF" skills/handoff-go/update.mjs | tar -x -C "$HG_TMP" && (cd "$HG_TMP/skills/handoff-go" && node update.mjs prepare --repo-dir "$REPO"); STATUS=$?; [ -n "$HG_TMP" ] && rm -rf "$HG_TMP"; exit $STATUS
+```
+
+> Governance executable provenance = governance data provenance.
+
+The updater that runs is the one trusted governance pins — never the bytes
+sitting in the current checkout, which may be stale, contributor-controlled, or
+contain malicious top-level code.
+
+1. `git fetch -q origin HEAD` fetches the remote repository's default branch into
+   `FETCH_HEAD`, independent of the current checkout branch or working tree.
+2. The remote default branch's `AGENTS.md` is parsed to locate the unique
+   `<!-- handoff-go:start/end -->` block, extract exactly one `Immutable ref`,
+   and validate that it is an immutable commit or tag. Text before or after the
+   managed block is ignored; duplicate or missing refs inside the block fail
+   closed.
+3. The content-addressed git object store (`${XDG_CACHE_HOME:-~/.cache}/handoff-go/objects.git`)
+   materializes the exact pinned commit from `https://github.com/ee-/handoff-go.git`
+   if not already cached.
+4. `git archive` extracts `update.mjs` directly from the immutable commit to a
+   fresh temporary directory.
+5. Node executes that materialized updater's `prepare` command against the target
+   repository (`--repo-dir "$REPO"`).
+6. The temporary extraction is cleaned up only if created by this invocation
+   (`[ -n "$HG_TMP" ] && rm -rf "$HG_TMP"`), preserving the command's original
+   exit status without touching caller-defined environment variables.
+
+Zero checkout JavaScript is loaded or executed. Extraction is fresh every run,
+so no temporary path is ever remembered between sessions, and nothing is
+installed globally.
+
+**Fast-path rule.** The trusted `update.mjs prepare` transaction owns the whole
+normal path. Do not separately resolve upstream HEAD, query open update PRs,
+re-derive the trusted pin, compare `OLD` vs `NEW`, decide proposal reuse, or
+inspect the current checkout's Handoff Go version. Run the one command and
+report its result. (On an already-trusted checkout, `update.mjs run` can also
+be invoked directly.)
+
+## Prepare (the transaction `run` executes)
 
 ```sh
 node <skill-dir>/update.mjs prepare [--repo-dir DIR] [--dry-run] [--json]
@@ -123,9 +167,11 @@ root-level path is rejected before any file is removed.
 
 ## Performance
 
-Healthy path: 4 external transitions inside the transaction (trusted discovery,
+Healthy path: `run` costs 1 external transition plus one materialization fetch
+only on a cache miss, then 4 inside the transaction (trusted discovery,
 upstream resolve, one upstream fetch, one trusted-branch fetch) and 2 outside
-(push, PR). The up-to-date path costs 2 and mutates nothing.
+(push, PR). The up-to-date path costs 2 inside the transaction — 3 in total
+through `run` on a cache hit — and mutates nothing.
 Expect tens of seconds. Report the observed round-trips and wall clock in the
 Evidence Packet.
 
@@ -133,8 +179,8 @@ Evidence Packet.
 
 Repositories pinned before this transaction existed carry an older procedure and
 may still have the legacy `.mjs` OMP watch entry. For the first upgrade only:
-run `go update` from the pinned skill; if that version has no
-`update.mjs prepare`, install the current skill project-locally with
-`npx skills add ee-/handoff-go`, then run `prepare` from it. The transaction
-recognizes the legacy entry and migrates it. Afterwards `go update` is normal.
-Do not add a daemon or launcher to solve this cold start.
+install the current skill project-locally with `npx skills add ee-/handoff-go`,
+then run `run` from it. If the trusted *pin* itself predates
+`update.mjs prepare`, `run` says so and that same one-time step applies. The
+transaction recognizes the legacy entry and migrates it. Afterwards `go update`
+is one command. Add no daemon or background updater for this cold start.

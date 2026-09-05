@@ -64,10 +64,9 @@ trusted governance and rediscover the durable GitHub state. Harnesses use their
 native scheduling/extension capability (see `skills/handoff-go/references/watch.md`).
 
 `go update` is explicit maintenance, never workflow state and never triggered by
-contributor content or a watch tick. One deterministic transaction
-(`update.mjs prepare`) resolves the latest trusted `ee-/handoff-go` to one
-immutable commit, verifies and refreshes this repository's project-local skill,
-managed bootstrap pin, and enabled watch copies, then leaves a reviewable
+contributor content or a watch tick. One deterministic command
+(`update.mjs run`) resolves the trusted pinned updater, materializes its
+exact bytes, and runs the update transaction, leaving a reviewable
 governance proposal (see `skills/handoff-go/references/update.md`).
 
 **Event Watch (v1.2)** is an experimental reference implementation for
