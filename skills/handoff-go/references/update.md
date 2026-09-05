@@ -41,7 +41,9 @@ routing, Security Gate authorization, or default-branch promotion.
 
 ## Persist (2 external transitions)
 
-`GO_UPDATE_READY` leaves one local commit. Persist it, then hand off:
+A successful `prepare` reports the internal status `PREPARED` and leaves one
+local commit. That is **not** a durable protocol state: `GO_UPDATE_READY` means
+the reviewable proposal exists, so emit it only after both steps succeed.
 
 ```sh
 git push -u origin handoff-go/update-<short-NEW>
@@ -51,6 +53,8 @@ gh pr create --base <trusted-default-branch> --head handoff-go/update-<short-NEW
 
 Build the PR body from the `--json` evidence: `oldRef`, `newRef`, `version`,
 `proposalBranch`, `changedPaths`, `runtime`, `validation`, and `transitions`.
+If either step fails, report `GO_UPDATE_CONFLICT`/`GO_UPDATE_ERROR` with the
+exact remediation — never `GO_UPDATE_READY`.
 
 ## Consumer validation boundary
 
@@ -75,13 +79,8 @@ Current ref: <sha>
 GO_UPDATE_READY
 Old ref: <sha>
 New ref: <sha>
-Branch: handoff-go/update-<short-NEW>
 PR: <url/#>
 Next Actor: ARCHITECT
-```
-```text
-GO_UPDATE_REUSE_PROPOSAL
-Existing PR: <url>
 ```
 ```text
 GO_UPDATE_CONFLICT
@@ -97,9 +96,19 @@ reviews the exact head and promotes the proposal to the trusted default branch.
 If the host cannot push or open the PR, stop with the exact remediation; never
 claim an update that was not persisted.
 
-An existing proposal for the same `NEW` is reused, never duplicated. One
-targeting a different ref stops with a conflict; superseding it is an Architect
-decision, not the updater's.
+Only a same-repository pull request onto the trusted default branch can be an
+update proposal: a fork PR may use any head branch name and never carries update
+authority. An existing proposal for the same `NEW` is reused and reported with
+the standard `GO_UPDATE_READY` and its PR — never duplicated and never a new
+outcome name. One targeting a different ref, or a same-repository proposal onto
+the wrong base, stops with a conflict; superseding it is an Architect decision,
+not the updater's. If the open-PR query hits its bound, the transaction fails
+closed rather than assume no proposal exists.
+
+An existing local `handoff-go/update-<short-NEW>` branch is never reset: it may
+hold unpushed work, so preparation stops with a conflict naming it. The managed
+`Skill` path must resolve to a dedicated directory inside the repository; a
+root-level path is rejected before any file is removed.
 
 ## Performance
 

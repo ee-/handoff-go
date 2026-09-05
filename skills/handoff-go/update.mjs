@@ -163,14 +163,19 @@ export function outsideScope(paths, skillDirRel) {
   return paths.filter((p) => !managed(p));
 }
 
-// One open proposal for this exact NEW is reused; a different ref is a bounded
-// conflict, never a second competing governance proposal.
-export function classifyProposal(openPrs, branch) {
-  const mine = (openPrs || []).filter((pr) => (pr.headRefName || "").startsWith(BRANCH_PREFIX));
-  const exact = mine.find((pr) => pr.headRefName === branch);
-  if (exact) return { kind: "reuse", pr: exact };
-  if (mine.length) return { kind: "conflict", pr: mine[0] };
-  return { kind: "none", pr: null };
+// Only a same-repository PR onto the trusted default branch can be an update
+// proposal: a fork PR may use any head branch name and never carries update
+// authority. One proposal for this exact NEW is reused; another ref, or a
+// same-repo proposal onto the wrong base, is a bounded conflict.
+export function classifyProposal(openPrs, branch, trustedBranch) {
+  const named = (openPrs || []).filter((pr) => (pr.headRefName || "").startsWith(BRANCH_PREFIX));
+  const sameRepo = named.filter((pr) => pr.isCrossRepository === false);
+  const wrongBase = sameRepo.find((pr) => pr.baseRefName !== trustedBranch);
+  if (wrongBase) return { kind: "conflict", pr: wrongBase, reason: "base" };
+  const exact = sameRepo.find((pr) => pr.headRefName === branch);
+  if (exact) return { kind: "reuse", pr: exact, reason: null };
+  if (sameRepo.length) return { kind: "conflict", pr: sameRepo[0], reason: "ref" };
+  return { kind: "none", pr: null, reason: null };
 }
 
 // Only recognized copies that are actually enabled are touched; absent
@@ -223,6 +228,15 @@ function git(dir, ...args) {
   return run("git", ["-C", dir, ...args]).trim();
 }
 
+function branchPresent(dir, branch) {
+  try {
+    git(dir, "rev-parse", "--verify", "-q", `refs/heads/${branch}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function firstLine(e) {
   return String(e.stderr || e.message || "").trim().split("\n")[0];
 }
@@ -244,12 +258,14 @@ function extractSkill(cache, sha, tmps) {
   return join(dir, UPSTREAM_SKILL);
 }
 
-// One invocation prepares the whole normal-path update; it never pushes,
-// never opens a PR, and never writes the default branch.
+// One invocation prepares the whole normal-path update; it never pushes, never
+// opens a PR, and never writes the default branch. Its success is the internal
+// status PREPARED, never the durable protocol state `GO_UPDATE_READY`: that one
+// may only be emitted once the proposal PR itself exists.
 export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
   const repo = resolve(repoDir);
   const ev = {
-    outcome: null,
+    result: null,
     upstream: UPSTREAM,
     oldRef: null,
     newRef: null,
@@ -265,10 +281,22 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
 
   const agents = readFileSync(join(repo, "AGENTS.md"), "utf8");
   const current = parseManagedBlock(agents);
-  const skillDirRel = dirname(current.skillPath);
   const trustedBranch = current.trustedBranch || "main";
   ev.oldRef = current.immutableRef;
   ev.skillPath = current.skillPath;
+
+  // The skill directory is deleted and reinstalled, so it must be a dedicated
+  // directory strictly inside the repository — never the repository root.
+  const skillDirRel = dirname(current.skillPath);
+  const skillDirAbs = resolve(repo, skillDirRel);
+  if (skillDirRel === "." || skillDirRel === "" || skillDirRel === "/" || skillDirAbs === repo) {
+    throw conflicts(
+      `Skill path ${current.skillPath} resolves to the repository root; pin it to a dedicated project-relative skill directory (e.g. .agents/skills/handoff-go/SKILL.md)`,
+    );
+  }
+  if (!skillDirAbs.startsWith(`${repo}/`)) {
+    throw conflicts(`Skill path ${current.skillPath} resolves outside the repository`);
+  }
 
   // 1 — resolve the canonical trusted upstream head to one immutable commit.
   let head;
@@ -282,44 +310,60 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
   if (!/^[0-9a-f]{40}$/.test(newRef)) throw errored(`could not resolve upstream HEAD from ${UPSTREAM}`);
   ev.newRef = newRef;
   if (newRef === ev.oldRef) {
-    ev.outcome = "GO_UP_TO_DATE";
+    ev.result = "UP_TO_DATE";
     return ev;
   }
 
   const branch = BRANCH_PREFIX + newRef.slice(0, 8);
   ev.proposalBranch = branch;
 
-  // 2 — existing proposals, before any mutation.
+  // 2 — existing proposals, before any mutation. Bounded query that must prove
+  // its own completeness: a truncated page cannot prove no proposal exists.
+  const PR_PAGE = 100;
   let openPrs;
   try {
-    openPrs = JSON.parse(run("gh", ["pr", "list", "--state", "open", "--json", "number,url,headRefName"], { cwd: repo }));
+    openPrs = JSON.parse(
+      run(
+        "gh",
+        [
+          "pr", "list", "--state", "open", "--limit", String(PR_PAGE),
+          "--json", "number,url,headRefName,baseRefName,isCrossRepository",
+        ],
+        { cwd: repo },
+      ),
+    );
   } catch (e) {
     throw errored(`gh pr list failed (install and authenticate gh): ${firstLine(e)}`);
   }
   ev.transitions.insideUpdater += 1;
-  const verdict = classifyProposal(openPrs, branch);
+  if (openPrs.length >= PR_PAGE) {
+    throw conflicts(
+      `open pull request list hit the ${PR_PAGE}-item query bound, so an existing Handoff Go update proposal cannot be ruled out; reduce open PRs or supersede the proposal manually`,
+    );
+  }
+  const verdict = classifyProposal(openPrs, branch, trustedBranch);
   ev.existingProposal = verdict.pr;
   if (verdict.kind === "reuse") {
-    ev.outcome = "GO_UPDATE_REUSE_PROPOSAL";
+    ev.result = "REUSE";
     return ev;
   }
   if (verdict.kind === "conflict") {
     throw conflicts(
-      `open Handoff Go update proposal ${verdict.pr.url} targets ${verdict.pr.headRefName}; supersede or close it before preparing ${branch}`,
+      verdict.reason === "base"
+        ? `open Handoff Go update proposal ${verdict.pr.url} targets base ${verdict.pr.baseRefName}, not the trusted default branch ${trustedBranch}; close or retarget it first`
+        : `open Handoff Go update proposal ${verdict.pr.url} targets ${verdict.pr.headRefName}; supersede or close it before preparing ${branch}`,
     );
   }
 
   const tmps = [];
   const cache = mkdtempSync(join(tmpdir(), "hg-cache-"));
   tmps.push(cache);
-  const branchExisted = (() => {
-    try {
-      git(repo, "rev-parse", "--verify", "-q", `refs/heads/${branch}`);
-      return true;
-    } catch {
-      return false;
-    }
-  })();
+  // Never reset an existing local proposal branch: it may hold unpushed work.
+  if (branchPresent(repo, branch)) {
+    throw conflicts(
+      `local branch ${branch} already exists and is not a recognized durable proposal; inspect and remove it before preparing an update`,
+    );
+  }
   let worktree = null;
   let keepBranch = false;
 
@@ -345,7 +389,7 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
     ev.transitions.insideUpdater += 1;
     worktree = mkdtempSync(join(tmpdir(), "hg-wt-"));
     tmps.push(worktree);
-    git(repo, "worktree", "add", "-q", "-B", branch, worktree, `origin/${trustedBranch}`);
+    git(repo, "worktree", "add", "-q", "-b", branch, worktree, `origin/${trustedBranch}`);
 
     // verify the trusted head's installed bytes and enabled copies against OLD
     const wtSkill = join(worktree, skillDirRel);
@@ -426,7 +470,9 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
     } else {
       ev.dryRun = true;
     }
-    ev.outcome = "GO_UPDATE_READY";
+    // Internal status only. `GO_UPDATE_READY` belongs to the Coder, after the
+    // proposal PR is durably created.
+    ev.result = "PREPARED";
     return ev;
   } finally {
     if (worktree) {
@@ -436,7 +482,7 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
         /* already gone */
       }
     }
-    if (!keepBranch && !branchExisted) {
+    if (!keepBranch) {
       try {
         git(repo, "branch", "-q", "-D", branch);
       } catch {
@@ -449,26 +495,38 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
 
 function report(ev) {
   const short = (r) => (r ? r.slice(0, 8) : "?");
-  if (ev.outcome === "GO_UP_TO_DATE") {
+  if (ev.result === "UP_TO_DATE") {
     console.log(`GO_UP_TO_DATE\nCurrent ref: ${ev.oldRef}`);
     return;
   }
-  if (ev.outcome === "GO_UPDATE_REUSE_PROPOSAL") {
-    console.log(`GO_UPDATE_REUSE_PROPOSAL\nExisting PR: ${ev.existingProposal.url}\nNew ref: ${ev.newRef}`);
+  if (ev.result === "REUSE") {
+    // The durable proposal already exists, so the protocol state is reportable.
+    console.log(
+      [
+        "GO_UPDATE_READY",
+        `Old ref: ${ev.oldRef}`,
+        `New ref: ${ev.newRef}`,
+        `PR: ${ev.existingProposal.url}`,
+        "Next Actor: ARCHITECT",
+      ].join("\n"),
+    );
     return;
   }
   console.log(
     [
-      "GO_UPDATE_READY",
+      "PREPARED (internal status — not a durable protocol state)",
       `Old ref: ${ev.oldRef}`,
       `New ref: ${ev.newRef}`,
       `Branch: ${ev.proposalBranch}${ev.dryRun ? " (dry run, not committed)" : ""}`,
       `Changed: ${ev.changedPaths.join(", ")}`,
       `Transitions inside updater: ${ev.transitions.insideUpdater}`,
       "",
-      "Persist (2 external transitions), then hand to the Architect:",
+      "Persist (2 external transitions), then report GO_UPDATE_READY with the PR:",
       `  git push -u origin ${ev.proposalBranch}`,
-      `  gh pr create --base ${"<trusted-default-branch>"} --head ${ev.proposalBranch} --title "chore(handoff-go): update ${short(ev.oldRef)} -> ${short(ev.newRef)}" --body-file <evidence.md>`,
+      `  gh pr create --base <trusted-default-branch> --head ${ev.proposalBranch} --title "chore(handoff-go): update ${short(ev.oldRef)} -> ${short(ev.newRef)}" --body-file <evidence.md>`,
+      "",
+      "Emit GO_UPDATE_READY only after both succeed; on failure report",
+      "GO_UPDATE_CONFLICT/GO_UPDATE_ERROR and never claim a persisted update.",
     ].join("\n"),
   );
 }
@@ -530,16 +588,50 @@ function demo() {
   assert(outsideScope(changedPaths(status), skillDirRel).length === 2, "unmanaged paths are rejected");
   assert(outsideScope(["AGENTS.md", `${skillDirRel}/watch.mjs`, ".omp/extensions/handoff-go-watch.js"], skillDirRel).length === 0, "managed surface allowed");
 
+  // Only same-repo PRs onto the trusted base can be update authority.
   const branch = `${BRANCH_PREFIX}deadbeef`;
-  assert(classifyProposal([], branch).kind === "none", "no proposal");
-  assert(classifyProposal([{ headRefName: branch, url: "u" }], branch).kind === "reuse", "same ref reuses");
-  assert(classifyProposal([{ headRefName: `${BRANCH_PREFIX}0badcafe`, url: "u" }], branch).kind === "conflict", "other ref conflicts");
-  assert(classifyProposal([{ headRefName: "feature/x" }], branch).kind === "none", "unrelated PR ignored");
+  const own = (headRefName, baseRefName = "main") => ({ headRefName, baseRefName, isCrossRepository: false, url: "u" });
+  const fork = (headRefName, baseRefName = "main") => ({ headRefName, baseRefName, isCrossRepository: true, url: "f" });
+  assert(classifyProposal([], branch, "main").kind === "none", "no proposal");
+  assert(classifyProposal([own(branch)], branch, "main").kind === "reuse", "same ref reuses");
+  assert(classifyProposal([own(`${BRANCH_PREFIX}0badcafe`)], branch, "main").kind === "conflict", "other ref conflicts");
+  assert(classifyProposal([own("feature/x")], branch, "main").kind === "none", "unrelated PR ignored");
+  assert(classifyProposal([fork(branch)], branch, "main").kind === "none", "fork PR is never update authority");
+  const wrongBase = classifyProposal([own(branch, "release")], branch, "main");
+  assert(wrongBase.kind === "conflict" && wrongBase.reason === "base", "same-repo proposal onto wrong base conflicts");
+  assert(classifyProposal([{ headRefName: branch, baseRefName: "main", url: "u" }], branch, "main").kind === "none", "unproven same-repo flag is not authority");
 
   const plan = planRuntime([".omp/watch.mjs", ".omp/extensions/handoff-go-watch.mjs"]);
   assert(JSON.stringify(plan.refresh) === JSON.stringify([[".omp/watch.mjs", "watch.mjs"]]), "refreshes only enabled copies");
   assert(plan.migrate[0][1] === ".omp/extensions/handoff-go-watch.js", "legacy .mjs migrates to .js");
   assert(plan.absent.includes(".pi/watch.mjs"), "absent integration stays absent");
+
+  // A root-level Skill path must be rejected before any destructive step.
+  const scratch = mkdtempSync(join(tmpdir(), "hg-guard-"));
+  try {
+    writeFileSync(join(scratch, "AGENTS.md"), agents.replace("- Skill: `skills/handoff-go/SKILL.md`", "- Skill: `SKILL.md`"));
+    throws(() => prepare({ repoDir: scratch }), /resolves to the repository root/, "root Skill path");
+    writeFileSync(join(scratch, "AGENTS.md"), agents.replace("- Skill: `skills/handoff-go/SKILL.md`", "- Skill: `./SKILL.md`"));
+    throws(() => prepare({ repoDir: scratch }), /resolves to the repository root/, "dot-relative root Skill path");
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+
+  // `GO_UPDATE_READY` may only head a report that carries a durable PR.
+  const captured = [];
+  const realLog = console.log;
+  console.log = (line) => captured.push(String(line));
+  try {
+    report({ result: "PREPARED", oldRef: "a".repeat(40), newRef: "b".repeat(40), proposalBranch: `${BRANCH_PREFIX}bbbbbbbb`, changedPaths: ["AGENTS.md"], transitions: { insideUpdater: 4 } });
+    report({ result: "REUSE", oldRef: "a".repeat(40), newRef: "b".repeat(40), existingProposal: { url: "https://example.invalid/pr/1" } });
+  } finally {
+    console.log = realLog;
+  }
+  assert(captured[0].split("\n")[0].startsWith("PREPARED"), "prepared report is not a protocol state");
+  assert(!captured[0].split("\n")[0].includes("GO_UPDATE_READY"), "prepared report never leads with GO_UPDATE_READY");
+  assert(captured[1].split("\n")[0] === "GO_UPDATE_READY", "reuse reports the standard outcome");
+  assert(captured[1].includes("PR: https://example.invalid/pr/1"), "reuse reports the durable PR");
+  assert(captured[1].includes("Next Actor: ARCHITECT"), "reuse routes to the Architect");
 
   console.log("update core: PASS");
 }
