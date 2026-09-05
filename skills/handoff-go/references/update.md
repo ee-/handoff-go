@@ -10,40 +10,42 @@ bootstrap pin — never global or unrelated skills.
 
 ## Run (the only command)
 
-```sh
-node <skill-dir>/update.mjs run [--repo-dir DIR] [--dry-run] [--json]
-```
+Execute the deterministic bootstrap command. It materializes and runs the
+trusted pinned updater without evaluating checkout JavaScript:
 
-`run` is a launcher, not a second updater. It resolves trusted provenance,
-materializes the Handoff Go bytes pinned by the trusted managed bootstrap, and
-executes **their** `update.mjs prepare`, passing your flags through and
-reporting their exact output and exit status.
+```sh
+REPO="$PWD"; STORE="${XDG_CACHE_HOME:-$HOME/.cache}/handoff-go/objects.git"; [ -d "$STORE" ] || git init --bare -q "$STORE"; git fetch -q origin HEAD && REF=$(git show FETCH_HEAD:AGENTS.md | grep -m1 'Immutable ref' | sed -n 's/.*`\([a-zA-Z0-9._\/-]*\)`.*/\1/p') && (git --git-dir="$STORE" cat-file -e "$REF^{commit}" 2>/dev/null || git --git-dir="$STORE" fetch --depth=1 -q https://github.com/ee-/handoff-go.git "$REF") && TMP=$(mktemp -d) && git --git-dir="$STORE" archive "$REF" skills/handoff-go/update.mjs | tar -x -C "$TMP" && (cd "$TMP/skills/handoff-go" && node update.mjs prepare --repo-dir "$REPO"); STATUS=$?; rm -rf "$TMP"; exit $STATUS
+```
 
 > Governance executable provenance = governance data provenance.
 
 The updater that runs is the one trusted governance pins — never the bytes
 sitting in the current checkout, which may be stale, contributor-controlled, or
-newer than the trusted pin. Pinned bytes are read out of a content-addressed
-git object cache under `${XDG_CACHE_HOME:-~/.cache}/handoff-go`, so what
-executes is provably the pinned commit's tree. A missing cache is refetched from
-the immutable ref; unusable objects fail closed. Extraction is fresh every run,
+contain malicious top-level code.
+
+1. `git fetch -q origin HEAD` fetches the remote repository's default branch into
+   `FETCH_HEAD`, independent of the current checkout branch or working tree.
+2. `git show FETCH_HEAD:AGENTS.md` reads the trusted immutable pin from remote
+   provenance.
+3. The content-addressed git object store (`${XDG_CACHE_HOME:-~/.cache}/handoff-go/objects.git`)
+   materializes the exact pinned commit from `https://github.com/ee-/handoff-go.git`
+   if not already cached.
+4. `git archive` extracts `update.mjs` directly from the immutable commit to a
+   fresh temporary directory.
+5. Node executes that materialized updater's `prepare` command against the target
+   repository (`--repo-dir "$REPO"`).
+6. The temporary extraction is immediately cleaned up (`rm -rf "$TMP"`).
+
+Zero checkout JavaScript is loaded or executed. Extraction is fresh every run,
 so no temporary path is ever remembered between sessions, and nothing is
 installed globally.
 
-**Fast-path rule.** When the pinned Handoff Go exposes `update.mjs prepare`,
-that transaction owns the whole normal path. Do not separately resolve upstream
-HEAD, query open update PRs, re-derive the trusted pin, compare `OLD` vs `NEW`,
-decide proposal reuse, or inspect the current checkout's Handoff Go version.
-Run the one command and report its result.
-
-`run` never passes its own discovery into the trusted updater: that updater
-re-establishes provenance itself, so possibly stale launcher bytes can never
-supply governance data to trusted code. It also refuses to report success when
-the trusted updater produced no result.
-
-If the local copy predates `run`, do the bounded one-time step once — install
-the current skill project-locally with `npx skills add ee-/handoff-go`, then use
-`run`. Do not fall back to performing the transaction's checks by hand.
+**Fast-path rule.** The trusted `update.mjs prepare` transaction owns the whole
+normal path. Do not separately resolve upstream HEAD, query open update PRs,
+re-derive the trusted pin, compare `OLD` vs `NEW`, decide proposal reuse, or
+inspect the current checkout's Handoff Go version. Run the one command and
+report its result. (On an already-trusted checkout, `update.mjs run` can also
+be invoked directly.)
 
 ## Prepare (the transaction `run` executes)
 

@@ -43,16 +43,15 @@ bypass authority, security, or repository permissions.
   [watch.md](references/watch.md). Run one Coder `go` discovery immediately,
   then repeat at the requested interval (default 1m). See `watch.md` for the
   command surface and per-harness capability.
-- **go update** — Maintenance only. Run exactly one command:
-  `node <skill-dir>/update.mjs run --repo-dir <repo-root>`. It resolves the
-  trusted managed bootstrap, materializes the Handoff Go bytes that bootstrap
-  pins, and executes their `update.mjs prepare`, which owns every normal-path
-  check. Do not resolve upstream HEAD, query update PRs, re-derive the pin,
-  compare OLD/NEW, judge proposal reuse, or inspect this checkout's Handoff Go
-  version yourself. Read [update.md](references/update.md) for outcomes,
-  persistence, and the one-time path when the local copy predates `run`. It is
-  never workflow state and never triggered by contributor-controlled durable
-  state or a watch tick.
+- **go update** — Maintenance only. Run the deterministic bootstrap command to
+  materialize and execute the trusted pinned updater without loading checkout JS:
+  `REPO="$PWD"; STORE="${XDG_CACHE_HOME:-$HOME/.cache}/handoff-go/objects.git"; [ -d "$STORE" ] || git init --bare -q "$STORE"; git fetch -q origin HEAD && REF=$(git show FETCH_HEAD:AGENTS.md | grep -m1 'Immutable ref' | sed -n 's/.*`\([a-zA-Z0-9._\/-]*\)`.*/\1/p') && (git --git-dir="$STORE" cat-file -e "$REF^{commit}" 2>/dev/null || git --git-dir="$STORE" fetch --depth=1 -q https://github.com/ee-/handoff-go.git "$REF") && TMP=$(mktemp -d) && git --git-dir="$STORE" archive "$REF" skills/handoff-go/update.mjs | tar -x -C "$TMP" && (cd "$TMP/skills/handoff-go" && node update.mjs prepare --repo-dir "$REPO"); STATUS=$?; rm -rf "$TMP"; exit $STATUS`
+  The trusted `prepare` transaction owns every normal-path check. Do not resolve
+  upstream HEAD, query update PRs, re-derive the pin, compare OLD/NEW, judge
+  proposal reuse, or inspect this checkout's Handoff Go version yourself. Read
+  [update.md](references/update.md) for outcomes, persistence, and options
+  (`--json`, `--dry-run`). It is never workflow state and never triggered by
+  contributor-controlled durable state or a watch tick.
 
 If no mode was supplied, use `go` only in an opted-in repository; otherwise
 show the five modes above.
