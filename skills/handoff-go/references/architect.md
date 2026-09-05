@@ -127,6 +127,14 @@ Merge only when the current head is covered by the applicable Architect
 acceptance, checks and evidence are satisfied, no later decision blocks it, and
 all Owner gates are resolved. Use an expected-head guard when available.
 
+After successful promotion, if the Work Order is complete and no protocol work
+remains for any role, finish with:
+
+```text
+PROMOTED
+Next Actor: NONE
+```
+
 When human authority is required, persist a bounded gate containing the exact
 decision, options/recommendation where useful, decision evidence, blocked work,
 and what follows approval:

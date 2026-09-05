@@ -26,6 +26,23 @@ correctness never depends on conversation memory from a previous tick.
 The canonical internal instruction (one meaning across every harness) is the
 `WATCH_TICK_PROMPT` in `watch.mjs`.
 
+## Durable-state fingerprint gate
+
+To prevent idle LLM token and UI churn when durable state is unchanged, the
+adapter runs a cheap deterministic GraphQL fingerprint probe before waking the
+model:
+
+- Probes default-branch HEAD OID, open issues (number + updatedAt), and open PRs
+  (number + updatedAt + headRefOid).
+- **Unchanged state** → watcher stays dormant (zero tokens, zero model turns).
+- **Changed state** → wakes exactly one normal Coder `go`.
+- **Fail-open rule** → on any probe ambiguity, missing `gh`, auth failure, or
+  pagination truncation, it immediately fails open and runs normal Coder `go`.
+- **Observation-watermark rule** → the baseline fingerprint only advances when
+  state before and after an active turn matches (`wakeFp === settledFp`). If state
+  changes during a turn, the baseline stays unconverged so a subsequent tick runs
+  one settling `go`. Once state stabilizes, the watcher becomes dormant.
+
 ## Watch-state rules
 
 Watch state is session/runtime control state only. It is never workflow
@@ -57,8 +74,8 @@ repository-level durable-state wake (v1.2): one GitHub event → one fresh Coder
 
 | Harness | Local Watch | Event Watch | Mechanism |
 |---|---|---|---|
-| OMP / Oh My Pi | supported (LIFECYCLE) | HEADLESS_READY, not implemented | `.omp/extensions/` universal extension (`adapters/watch.mjs`) |
-| Pi coding agent | supported (LIFECYCLE) | HEADLESS_READY, not implemented | `.pi/extensions/` universal extension (`adapters/watch.mjs`) |
+| OMP / Oh My Pi | supported (LIFECYCLE) | HEADLESS_READY, not implemented | `.omp/extensions/` universal extension (`adapters/watch.js`) |
+| Pi coding agent | UNVERIFIED | HEADLESS_READY, not implemented | `.pi/extensions/` universal extension (`adapters/watch.js`) |
 | Claude Code | — | EVENT_READY (official GitHub Action) | native session scheduler / official integration |
 | OpenCode | — | EVENT_READY (official GitHub integration) | native plugin + session `prompt_async` |
 | DeepSeek Harness | — | HEADLESS_READY, not implemented | native Cordis timer + `agent.followup` |
@@ -68,8 +85,9 @@ repository-level durable-state wake (v1.2): one GitHub event → one fresh Coder
 start a turn; `Stop` continuation needs interactive empirical validation).
 Event Watch is the Codex path. Claude Code and OpenCode are documented
 EVENT_READY but not shipped; Pi, OMP, and DeepSeek Harness are only
-HEADLESS_READY (not implemented).
-
+HEADLESS_READY (not implemented). Pi Local Watch remains `UNVERIFIED` until a
+real Pi native-discovery smoke test is performed; do not infer Pi support from
+OMP.
 ## Event Watch (v1.2)
 
 Repository-level counterpart to Local Watch. A durable GitHub state event wakes
@@ -133,20 +151,20 @@ binary or adapter file.
 
 ### Enabling watch in a harness
 
-The universal adapter file ships in the skill package (`adapters/watch.mjs`).
-OMP and Pi auto-discover project extensions only in `.omp/extensions/` /
-`.pi/extensions/`, so enabling watch is a one-time native load step:
+The universal adapter file ships in the skill package (`adapters/watch.js`).
+OMP and Pi auto-discover project extensions as `*.js` or `*.ts` in
+`.omp/extensions/` / `.pi/extensions/`, so enabling watch is a one-time native
+load step:
 
 ```sh
 mkdir -p .omp/extensions
 cp <skill>/watch.mjs .omp/watch.mjs
-cp <skill>/adapters/watch.mjs .omp/extensions/handoff-go-watch.mjs
+cp <skill>/adapters/watch.js .omp/extensions/handoff-go-watch.js
 
 mkdir -p .pi/extensions
 cp <skill>/watch.mjs .pi/watch.mjs
-cp <skill>/adapters/watch.mjs .pi/extensions/handoff-go-watch.mjs
+cp <skill>/adapters/watch.js .pi/extensions/handoff-go-watch.js
 ```
-
 The shared core must be copied to the harness root (`.omp/watch.mjs` /
 `.pi/watch.mjs`) because the adapter imports `../watch.mjs` relative to its
 `.omp/extensions/`/`.pi/extensions/` location. Copying only the adapter file

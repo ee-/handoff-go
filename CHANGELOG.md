@@ -47,11 +47,15 @@ Coder watch (`go watch`):
 - `go watch`, `go watch <interval>`, `go watch stop` Coder command surface;
 - default 1m cadence, minimum 60s, immediate first discovery;
 - canonical watch-tick prompt and shared dependency-free parser core;
-- OMP and Pi native extension adapters (managed timer + follow-up wake, no
-  overlapping runs, session-shutdown cleanup);
-- per-harness compatibility table (Claude Code, OpenCode, DeepSeek Harness,
-  Codex) with native capabilities and a Codex `WATCH_UNSUPPORTED` result.
-
+- universal extension adapter in `adapters/watch.js`, natively discovered by
+  OMP and Pi (`.omp/extensions/handoff-go-watch.js`);
+- durable-state fingerprint wake filter: keeps watcher dormant on unchanged
+  state, wakes on change, fails open on probe error or pagination truncation,
+  and applies observation-watermark rule to prevent race conditions during turns;
+- explicit terminal promotion: Architect finishes with `PROMOTED` +
+  `Next Actor: NONE` when no protocol work remains;
+- per-harness compatibility table updated; Pi Local Watch marked `UNVERIFIED`
+  pending real native discovery smoke.
 ## 1.0.0 — pending
 
 Initial public Handoff Go release candidate:

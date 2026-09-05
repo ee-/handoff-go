@@ -16,7 +16,7 @@ PACKAGE = {
     SKILL_ROOT / "references/coder.md",
     SKILL_ROOT / "references/core.md",
     SKILL_ROOT / "watch.mjs",
-    SKILL_ROOT / "adapters/watch.mjs",
+    SKILL_ROOT / "adapters/watch.js",
     SKILL_ROOT / "references/watch.md",
 }
 REQUIRED = {
@@ -103,10 +103,13 @@ REQUIRED_TEXT = {
         "branches: [main]",
         "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     ),
-    SKILL_ROOT / "adapters/watch.mjs": (
+    SKILL_ROOT / "adapters/watch.js": (
         'deliverAs: "followUp"',
         "event.source === \"extension\"",
         "parseWatchCommand",
+        "getDurableStateFingerprint",
+        "baselineFingerprint",
+        "wakeFingerprint",
         "ctx?.setInterval",
         'action: "handled"',
         "handled: true",
@@ -211,9 +214,11 @@ def main() -> None:
           "Coder workflow contains self-routing")
     check("Next Actor: ARCHITECT" not in read(SKILL_ROOT / "references/architect.md"),
           "Architect workflow contains self-routing")
+    check("PROMOTED" in read(SKILL_ROOT / "references/architect.md")
+          and "Next Actor: NONE" in read(SKILL_ROOT / "references/architect.md"),
+          "Architect workflow must return PROMOTED with Next Actor: NONE upon terminal promotion")
     check("Next Actor: OWNER" not in protocol,
           "protocol routes to Owner as an executable role")
-
     # --- Event Watch (v1.2) reference checks ---
     ew = Path(".github/workflows/handoff-go-coder-event-watch.yml")
     check(ew.is_file(), "Event Watch workflow missing")
