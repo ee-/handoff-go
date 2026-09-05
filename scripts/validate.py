@@ -52,7 +52,8 @@ REQUIRED_TEXT = {
         "GITHUB_ACCESS_REQUIRED",
         "go update",
         "Quiet by default",
-        "Stop immediately after emitting the terminal",
+        "verbatim — same lines",
+        "then stop immediately",
     ),
     SKILL_ROOT / "agents/openai.yaml": (
         'display_name: "Handoff Go"',
@@ -108,6 +109,7 @@ REQUIRED_TEXT = {
         "Fast-path rule",
         "Quiet by default",
         "Maintenance stop boundary",
+        "Emit the outcome verbatim",
         "sole promotion routing",
     ),
     Path("AGENTS.md"): ("go update",),

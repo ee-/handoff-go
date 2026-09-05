@@ -165,18 +165,21 @@ claim an update that was not persisted.
 creation. Once it emits a terminal maintenance outcome (`GO_UP_TO_DATE`,
 `GO_UPDATE_READY`, `GO_UPDATE_CONFLICT`, or `GO_UPDATE_ERROR`), it stops:
 
-1. **Stop immediately**: no model-authored commentary, explanations, or summaries
+1. **Emit the outcome verbatim**: surface the updater's terminal lines exactly as
+   printed — same lines, same order, no rewording, condensing, markdown
+   decoration, or added prefix/suffix.
+2. **Stop immediately**: no model-authored commentary, explanations, or summaries
    after the protocol outcome.
-2. **No promotion-history narration**: do not investigate, explain, or narrate why
+3. **No promotion-history narration**: do not investigate, explain, or narrate why
    the trusted current pin changed (e.g. whether a previous PR merged). The current
    trusted pin is the only input state.
-3. **No branch cleanup**: do not delete local or remote branches from prior
+4. **No branch cleanup**: do not delete local or remote branches from prior
    promoted proposals. Branch lifecycle belongs to the promotion/cleanup owner,
    never dependency maintenance.
-4. **No promotion management**: do not approve, review, merge, close, or reopen
+5. **No promotion management**: do not approve, review, merge, close, or reopen
    proposals, and do not tell the user to type `merge`. `Next Actor: ARCHITECT` is
    the sole promotion routing.
-5. **Diagnostics are read-only**: `--verbose` and `--json` expose evidence on
+6. **Diagnostics are read-only**: `--verbose` and `--json` expose evidence on
    demand, but never perform promotion or cleanup actions.
 
 ### Quiet by default and diagnostic modes

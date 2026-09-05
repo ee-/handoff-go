@@ -850,6 +850,7 @@ function report(ev, { verbose = false } = {}) {
     `  gh pr create --base <trusted-default-branch> --head ${ev.proposalBranch} --title "chore(handoff-go): update ${short(ev.oldRef)} -> ${short(ev.newRef)}" --body-file <evidence.md>`,
     "",
     "Emit GO_UPDATE_READY only after both succeed and then STOP immediately.",
+    "Emit every terminal outcome verbatim: same lines, same order, no rewording.",
     "Do NOT clean up old branches, inspect prior merges, or instruct promotion.",
     "Next Actor: ARCHITECT is the sole promotion routing.",
     "On failure report GO_UPDATE_CONFLICT/GO_UPDATE_ERROR and stop.",
@@ -1092,6 +1093,7 @@ function demo() {
   assert(captured[2].includes("Old ref: aaaaaaaa"), "reuse reports short old ref by default");
   assert(captured[2].includes("PR: https://example.invalid/pr/1"), "reuse reports the durable PR");
   assert(captured[0].includes("Do NOT clean up old branches"), "prepared instructions include maintenance stop boundary");
+  assert(captured[0].includes("Emit every terminal outcome verbatim"), "prepared instructions require verbatim outcome emission");
   assert(captured[2].includes("Next Actor: ARCHITECT"), "reuse routes to the Architect");
   assert(captured[3] === `GO_UP_TO_DATE\nCurrent ref: ${"a".repeat(8)}`, "quiet up-to-date output matches target format");
   assert(captured[4].includes(`Current ref: ${"a".repeat(40)}`) && captured[4].includes("Provenance:"), "verbose up-to-date output includes diagnostic fields");
