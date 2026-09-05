@@ -14,7 +14,7 @@ Execute the deterministic bootstrap command. It materializes and runs the
 trusted pinned updater without evaluating checkout JavaScript:
 
 ```sh
-REPO="$PWD"; STORE="${XDG_CACHE_HOME:-$HOME/.cache}/handoff-go/objects.git"; [ -d "$STORE" ] || git init --bare -q "$STORE"; git fetch -q origin HEAD && REF=$(git show FETCH_HEAD:AGENTS.md | node -e 'const b=fs.readFileSync(0,"utf8"),S="<!-- handoff-go:start -->",E="<!-- handoff-go:end -->";if(b.split(S).length!==2||b.split(E).length!==2)process.exit(1);const s=b.indexOf(S),e=b.indexOf(E);if(s===-1||e===-1||s>=e)process.exit(1);const ms=[...b.slice(s+S.length,e).matchAll(/^[ \t]*-[ \t]*Immutable ref:[ \t]*(.+)$/gm)];if(ms.length!==1)process.exit(1);const v=ms[0][1],c=v.match(/`([^`]+)`/),r=(c?c[1]:v).trim().replace(/^["\x27]+|["\x27]+$/g,"").trim();if(!/^(?:[0-9a-f]{40}|[A-Za-z0-9][A-Za-z0-9._\/-]*)$/.test(r)||/^(main|master|develop|trunk|HEAD)$/i.test(r))process.exit(1);process.stdout.write(r);') && [ -n "$REF" ] && (git --git-dir="$STORE" cat-file -e "$REF^{commit}" 2>/dev/null || git --git-dir="$STORE" fetch --depth=1 -q https://github.com/ee-/handoff-go.git "$REF") && TMP=$(mktemp -d) && git --git-dir="$STORE" archive "$REF" skills/handoff-go/update.mjs | tar -x -C "$TMP" && (cd "$TMP/skills/handoff-go" && node update.mjs prepare --repo-dir "$REPO"); STATUS=$?; rm -rf "$TMP"; exit $STATUS
+HG_TMP=""; REPO="$PWD"; STORE="${XDG_CACHE_HOME:-$HOME/.cache}/handoff-go/objects.git"; [ -d "$STORE" ] || git init --bare -q "$STORE"; git fetch -q origin HEAD && REF=$(git show FETCH_HEAD:AGENTS.md | node -e 'const b=fs.readFileSync(0,"utf8"),S="<!-- handoff-go:start -->",E="<!-- handoff-go:end -->";if(b.split(S).length!==2||b.split(E).length!==2)process.exit(1);const s=b.indexOf(S),e=b.indexOf(E);if(s===-1||e===-1||s>=e)process.exit(1);const ms=[...b.slice(s+S.length,e).matchAll(/^[ \t]*-[ \t]*Immutable ref:[ \t]*(.+)$/gm)];if(ms.length!==1)process.exit(1);const v=ms[0][1],c=v.match(/`([^`]+)`/),r=(c?c[1]:v).trim().replace(/^["\x27]+|["\x27]+$/g,"").trim();if(!/^(?:[0-9a-f]{40}|[A-Za-z0-9][A-Za-z0-9._\/-]*)$/.test(r)||/^(main|master|develop|trunk|HEAD)$/i.test(r))process.exit(1);process.stdout.write(r);') && [ -n "$REF" ] && (git --git-dir="$STORE" cat-file -e "$REF^{commit}" 2>/dev/null || git --git-dir="$STORE" fetch --depth=1 -q https://github.com/ee-/handoff-go.git "$REF") && HG_TMP=$(mktemp -d) && git --git-dir="$STORE" archive "$REF" skills/handoff-go/update.mjs | tar -x -C "$HG_TMP" && (cd "$HG_TMP/skills/handoff-go" && node update.mjs prepare --repo-dir "$REPO"); STATUS=$?; [ -n "$HG_TMP" ] && rm -rf "$HG_TMP"; exit $STATUS
 ```
 
 > Governance executable provenance = governance data provenance.
@@ -37,7 +37,9 @@ contain malicious top-level code.
    fresh temporary directory.
 5. Node executes that materialized updater's `prepare` command against the target
    repository (`--repo-dir "$REPO"`).
-6. The temporary extraction is immediately cleaned up (`rm -rf "$TMP"`).
+6. The temporary extraction is cleaned up only if created by this invocation
+   (`[ -n "$HG_TMP" ] && rm -rf "$HG_TMP"`), preserving the command's original
+   exit status without touching caller-defined environment variables.
 
 Zero checkout JavaScript is loaded or executed. Extraction is fresh every run,
 so no temporary path is ever remembered between sessions, and nothing is
