@@ -124,6 +124,15 @@ available native continuation; that is not a handoff.
 Before stopping for another actor, durably record why the role stopped, what
 remains, the next actor, and enough state for rediscovery without chat relay.
 
+
+### Quiet by default
+
+Ordinary invocations emit only the durable protocol outcome and information
+required for the next action. Internal reasoning, discovery narration,
+implementation commentary, redundant evidence, and performance diagnostics
+belong in durable records (Work Order, PR, review comment) or explicit
+diagnostic surfaces (`--verbose`, `--json`), never in the default user-facing
+surface.
 ### Owner is a gate, not a role
 
 `OWNER_ACTION_REQUIRED` requests a bounded human decision; it is not a routing
