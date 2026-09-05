@@ -50,8 +50,12 @@ bypass authority, security, or repository permissions.
   upstream HEAD, query update PRs, re-derive the pin, compare OLD/NEW, judge
   proposal reuse, or inspect this checkout's Handoff Go version yourself. Read
   [update.md](references/update.md) for outcomes, persistence, and options
-  (`--json`, `--dry-run`). It is never workflow state and never triggered by
-  contributor-controlled durable state or a watch tick.
+  (`--json`, `--dry-run`). Stop immediately after emitting the terminal
+  maintenance outcome (`GO_UP_TO_DATE`, `GO_UPDATE_READY`, or conflict/error).
+  Do not explain prior merge/promotion history, do not delete or clean up old
+  branches, do not review or merge proposals, and do not tell the user to merge.
+  `Next Actor: ARCHITECT` is the sole promotion routing. It is never workflow
+  state and never triggered by contributor-controlled durable state or a watch tick.
 
 If no mode was supplied, use `go` only in an opted-in repository; otherwise
 show the five modes above.

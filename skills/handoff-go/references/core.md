@@ -132,7 +132,10 @@ required for the next action. Internal reasoning, discovery narration,
 implementation commentary, redundant evidence, and performance diagnostics
 belong in durable records (Work Order, PR, review comment) or explicit
 diagnostic surfaces (`--verbose`, `--json`), never in the default user-facing
-surface.
+surface. Maintenance commands (such as `go update`) stop immediately at their
+terminal outcome (`GO_UP_TO_DATE`, `GO_UPDATE_READY`, or conflict/error). They
+do not narrate prior promotion history, delete old branches, or instruct
+review/merge actions. `Next Actor: ARCHITECT` is the sole promotion routing.
 ### Owner is a gate, not a role
 
 `OWNER_ACTION_REQUIRED` requests a bounded human decision; it is not a routing
