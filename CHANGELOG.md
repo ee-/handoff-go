@@ -26,6 +26,15 @@
   `AGENTS.md`, and open proposals, so a contributor-controlled checkout can
   never supply the pin, Skill path, or trusted branch; the transaction also
   fails closed if the trusted head moves mid-preparation;
+- quiet by default: ordinary successful Handoff Go commands emit only the durable
+  protocol outcome and fields required for the next action; internal reasoning,
+  discovery narration, implementation commentary, redundant evidence, and
+  performance diagnostics do not appear by default; detailed diagnostics remain
+  available via explicit `--verbose` and `--json` flags;
+- managed bootstrap command-routing compatibility: protocol upgrades automatically
+  upgrade legacy single-command routing in `AGENTS.md` to explicitly include
+  `go update` so fresh sessions discover maintenance directly from trusted
+  governance without out-of-band knowledge;
 - governance executable provenance = governance data provenance: `update.mjs run`
   resolves the trusted default-branch bootstrap, materializes the exact Handoff Go
   skill tree pinned there from a content-addressed git object store, and executes

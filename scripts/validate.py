@@ -50,6 +50,7 @@ REQUIRED_TEXT = {
         "ROLE_REQUIRED",
         "GITHUB_ACCESS_REQUIRED",
         "go update",
+        "Quiet by default",
     ),
     SKILL_ROOT / "agents/openai.yaml": (
         'display_name: "Handoff Go"',
@@ -73,6 +74,9 @@ REQUIRED_TEXT = {
         "Repository: <owner/name>",
         "Worktree: CLEAN | KNOWN_CHANGES | BLOCKED",
         "AC-n -> observed evidence",
+    ),
+    SKILL_ROOT / "references/core.md": (
+        "Quiet by default",
     ),
     SKILL_ROOT / "references/adoption.md": (
         "replace only that block",
@@ -100,6 +104,7 @@ REQUIRED_TEXT = {
         "update.mjs run",
         "executable provenance = governance data provenance",
         "Fast-path rule",
+        "Quiet by default",
     ),
     Path("AGENTS.md"): ("go update",),
     Path("README.md"): ("npx skills add ee-/handoff-go",),
@@ -146,6 +151,7 @@ REQUIRED_TEXT = {
         "floating governance ref",
         "Skill path must not change",
         "Never trim the whole buffer",
+        "legacy single-command routing",
     ),
     Path(".github/workflows/validate.yml"): (
         "branches: [main]",

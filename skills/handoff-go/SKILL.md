@@ -76,6 +76,11 @@ are durably written. If required GitHub access is unavailable, return
 
 ## Completion
 
-Finish with exactly one durable protocol state from the loaded role guide. A
-stop for another actor must record why, what remains, and `Next Actor`. Chat is
-never the only record of a material workflow fact.
+Quiet by default: emit only the durable protocol outcome and information
+required for the next action (e.g. `WORK_ORDER_READY`, `READY_FOR_REVIEW`,
+`GO_UP_TO_DATE`, `GO_UPDATE_READY`, or a conflict/error with its single
+actionable remediation). Internal reasoning, discovery narration, implementation
+commentary, redundant evidence, and performance diagnostics must not appear by
+default. Detailed evidence belongs in durable records (Work Order, PR Evidence
+Packet, Architect review comment) or opt-in diagnostic surfaces (`--verbose`,
+`--json`). Chat is never the only record of a material workflow fact.

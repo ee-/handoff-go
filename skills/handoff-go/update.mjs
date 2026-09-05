@@ -143,6 +143,14 @@ export function updateManagedBlock(text, { ref, version = null }) {
   let next = replacePinLine(inner, "Immutable ref", ref);
   if (version !== null) next = replacePinLine(next, "Version", version);
 
+  // Upgrade legacy single-command routing to explicitly include `go update` so
+  // fresh sessions discover maintenance directly from trusted governance.
+  if (!/`go update`/.test(next)) {
+    next = next.replace(
+      /For the exact ordinary-text message `go`,\s*use\s*(the\s*(?:pinned\s*)?Handoff Go skill above)\./m,
+      "For the exact ordinary-text messages `go` and `go update`, use $1 (`go update` is maintenance only, never workflow state)."
+    );
+  }
   const out = `${pre}${START}${next}${END}${post}`;
   const after = parseManagedBlock(out);
   if (after.immutableRef !== ref) throw conflicts("Immutable ref rewrite did not apply");
@@ -639,30 +647,48 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
   }
 }
 
-function report(ev) {
+function report(ev, { verbose = false } = {}) {
   const short = (r) => (r ? r.slice(0, 8) : "?");
   if (ev.result === "UP_TO_DATE") {
-    console.log(`GO_UP_TO_DATE\nCurrent ref: ${ev.oldRef}`);
+    if (verbose) {
+      console.log(`GO_UP_TO_DATE\nCurrent ref: ${ev.oldRef}\nProvenance: ${JSON.stringify(ev.provenance)}\nTransitions inside updater: ${ev.transitions.insideUpdater}`);
+    } else {
+      console.log(`GO_UP_TO_DATE\nCurrent ref: ${short(ev.oldRef)}`);
+    }
     return;
   }
   if (ev.result === "REUSE") {
     // The durable proposal already exists, so the protocol state is reportable.
-    console.log(
-      [
-        "GO_UPDATE_READY",
-        `Old ref: ${ev.oldRef}`,
-        `New ref: ${ev.newRef}`,
-        `PR: ${ev.existingProposal.url}`,
-        "Next Actor: ARCHITECT",
-      ].join("\n"),
-    );
+    if (verbose) {
+      console.log(
+        [
+          "GO_UPDATE_READY",
+          `Old ref: ${ev.oldRef}`,
+          `New ref: ${ev.newRef}`,
+          `PR: ${ev.existingProposal.url}`,
+          "Next Actor: ARCHITECT",
+          `Provenance: ${JSON.stringify(ev.provenance)}`,
+          `Transitions inside updater: ${ev.transitions.insideUpdater}`,
+        ].join("\n"),
+      );
+    } else {
+      console.log(
+        [
+          "GO_UPDATE_READY",
+          `Old ref: ${short(ev.oldRef)}`,
+          `New ref: ${short(ev.newRef)}`,
+          `PR: ${ev.existingProposal.url}`,
+          "Next Actor: ARCHITECT",
+        ].join("\n"),
+      );
+    }
     return;
   }
   console.log(
     [
       "PREPARED (internal status — not a durable protocol state)",
-      `Old ref: ${ev.oldRef}`,
-      `New ref: ${ev.newRef}`,
+      `Old ref: ${short(ev.oldRef)}`,
+      `New ref: ${short(ev.newRef)}`,
       `Branch: ${ev.proposalBranch}${ev.dryRun ? " (dry run, not committed)" : ""}`,
       `Changed: ${ev.changedPaths.join(", ")}`,
       `Transitions inside updater: ${ev.transitions.insideUpdater}`,
@@ -717,6 +743,18 @@ function demo() {
   assert(updated.includes("# Repo"), "pre-block header preserved");
   assert(parseManagedBlock(updated).skillPath === "skills/handoff-go/SKILL.md", "skill path untouched");
   assert(updated.split("\n").length === agents.split("\n").length, "line count unchanged");
+
+  // Upgrading an older managed block with single `go` command routing expands it to include `go update`.
+  const legacyRoutingAgents = agents.replace(
+    "Unrelated trailing governance prose that MUST survive.",
+    "For the exact ordinary-text message `go`, use the pinned Handoff Go skill above.\nLoad this block from main.",
+  );
+  const upgradedRouting = updateManagedBlock(legacyRoutingAgents, { ref: "c".repeat(40) });
+  assert(
+    upgradedRouting.includes("For the exact ordinary-text messages `go` and `go update`, use the pinned Handoff Go skill above (`go update` is maintenance only, never workflow state)."),
+    "legacy command routing upgraded",
+  );
+  assert(upgradedRouting.includes("Load this block from main."), "surrounding prose preserved");
 
   throws(() => parseManagedBlock("no block here"), /not opted in/, "missing block");
   throws(() => parseManagedBlock(agents + agents), /exactly one managed block/, "duplicate block");
@@ -799,14 +837,19 @@ function demo() {
   try {
     report({ result: "PREPARED", oldRef: "a".repeat(40), newRef: "b".repeat(40), proposalBranch: `${BRANCH_PREFIX}bbbbbbbb`, changedPaths: ["AGENTS.md"], transitions: { insideUpdater: 4 } });
     report({ result: "REUSE", oldRef: "a".repeat(40), newRef: "b".repeat(40), existingProposal: { url: "https://example.invalid/pr/1" } });
+    report({ result: "UP_TO_DATE", oldRef: "a".repeat(40) });
+    report({ result: "UP_TO_DATE", oldRef: "a".repeat(40), provenance: { repository: "o/r" }, transitions: { insideUpdater: 2 } }, { verbose: true });
   } finally {
     console.log = realLog;
   }
   assert(captured[0].split("\n")[0].startsWith("PREPARED"), "prepared report is not a protocol state");
   assert(!captured[0].split("\n")[0].includes("GO_UPDATE_READY"), "prepared report never leads with GO_UPDATE_READY");
   assert(captured[1].split("\n")[0] === "GO_UPDATE_READY", "reuse reports the standard outcome");
+  assert(captured[1].includes("Old ref: aaaaaaaa"), "reuse reports short old ref by default");
   assert(captured[1].includes("PR: https://example.invalid/pr/1"), "reuse reports the durable PR");
   assert(captured[1].includes("Next Actor: ARCHITECT"), "reuse routes to the Architect");
+  assert(captured[2] === `GO_UP_TO_DATE\nCurrent ref: ${"a".repeat(8)}`, "quiet up-to-date output matches target format");
+  assert(captured[3].includes(`Current ref: ${"a".repeat(40)}`) && captured[3].includes("Provenance:"), "verbose up-to-date output includes diagnostic fields");
 
   // The pinned ref reaches `git fetch`, so the launcher revalidates it too.
   throws(() => materializePinned("main", []), /floating ref is not executable authority|floating ref executable authority/, "floating ref is not executable authority");
@@ -844,6 +887,7 @@ if (invokedDirectly) {
     try {
       const ev = prepare({ repoDir: flag("--repo-dir", process.cwd()), dryRun: rest.includes("--dry-run") });
       if (rest.includes("--json")) console.log(JSON.stringify(ev, null, 2));
+      else if (rest.includes("--verbose")) report(ev, { verbose: true });
       else report(ev);
     } catch (e) {
       fail(e);
@@ -855,14 +899,17 @@ if (invokedDirectly) {
     const tmps = [];
     try {
       const t = resolveTrustedUpdater({ repoDir: flag("--repo-dir", process.cwd()) }, tmps);
-      process.stderr.write(
-        `trusted updater ${t.ref.slice(0, 8)} for ${t.repository} (${t.cached ? "cache hit" : "materialized"})\n`,
-      );
+      if (rest.includes("--verbose")) {
+        process.stderr.write(
+          `trusted updater ${t.ref.slice(0, 8)} for ${t.repository} (${t.cached ? "cache hit" : "materialized"})\n`,
+        );
+      }
       // Pass the realpath: an updater guarded with `file://${process.argv[1]}`
       // silently no-ops when a symlinked temporary path is handed to it.
       const args = [realpathSync(t.updater), "prepare", "--repo-dir", t.repo];
       if (rest.includes("--dry-run")) args.push("--dry-run");
       if (rest.includes("--json")) args.push("--json");
+      if (rest.includes("--verbose")) args.push("--verbose");
       const child = spawnSync(process.execPath, args, { encoding: "utf8" });
       if (child.stdout) process.stdout.write(child.stdout);
       if (child.stderr) process.stderr.write(child.stderr);

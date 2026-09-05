@@ -75,7 +75,9 @@ One invocation does all mechanically unique work and stops at the first failure:
    closed if that head moved during preparation;
 8. verify installed bytes and enabled runtime copies against `OLD`; a drifted or
    unrecognized copy fails closed — never overwrite local edits;
-9. install exact `NEW` skill bytes and rewrite only the managed pin/version;
+9. install exact `NEW` skill bytes, rewrite only managed pin/version fields,
+   and upgrade command routing in the managed block to explicitly include
+   `go update` if previously missing;
 10. refresh recognized enabled watch copies, migrating a legacy `.mjs` entry to
     the `.js` entry; absent integration stays absent;
 11. validate the prepared state, reject any change outside managed scope, and
@@ -128,18 +130,18 @@ commit was installed; upstream CI owns that suite.
 
 ```text
 GO_UP_TO_DATE
-Current ref: <sha>
+Current ref: <ref>
 ```
 ```text
 GO_UPDATE_READY
-Old ref: <sha>
-New ref: <sha>
+Old ref: <ref>
+New ref: <ref>
 PR: <url/#>
 Next Actor: ARCHITECT
 ```
 ```text
 GO_UPDATE_CONFLICT
-<exact reason / remediation, e.g. drifted copy path, proposal targeting another ref>
+<single actionable reason/remediation>
 ```
 ```text
 GO_UPDATE_ERROR
@@ -150,6 +152,17 @@ Do not print `GO_UPDATED` — the change is only durable once the Architect
 reviews the exact head and promotes the proposal to the trusted default branch.
 If the host cannot push or open the PR, stop with the exact remediation; never
 claim an update that was not persisted.
+
+### Quiet by default and diagnostic modes
+
+Quiet by default: ordinary successful `go update` invocations emit only the
+standard protocol outcome and fields required for the next action. Discovery
+narration, internal reasoning, timing commentary, and implementation details do
+not appear by default. Failures output only one actionable reason/remediation.
+
+Detailed evidence is available on demand:
+- `--verbose` — displays full commit SHAs, provenance metadata, and transition counts;
+- `--json` — emits machine-readable evidence for scripting and PR creation.
 
 Only a same-repository pull request onto the trusted default branch can be an
 update proposal: a fork PR may use any head branch name and never carries update
