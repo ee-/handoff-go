@@ -20,6 +20,7 @@ PACKAGE = {
     SKILL_ROOT / "adapters/watch.js",
     SKILL_ROOT / "references/watch.md",
     SKILL_ROOT / "references/update.md",
+    SKILL_ROOT / "migrations.json",
 }
 REQUIRED = {
     Path(path)
@@ -152,6 +153,9 @@ REQUIRED_TEXT = {
         "Skill path must not change",
         "Never trim the whole buffer",
         "legacy single-command routing",
+        "export function applyDeclarativeMigrations",
+        "unsupported migration schema version",
+        "disallowed or unknown managed field",
     ),
     Path(".github/workflows/validate.yml"): (
         "branches: [main]",

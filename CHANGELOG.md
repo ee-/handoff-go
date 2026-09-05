@@ -35,6 +35,12 @@
   upgrade legacy single-command routing in `AGENTS.md` to explicitly include
   `go update` so fresh sessions discover maintenance directly from trusted
   governance without out-of-band knowledge;
+- forward-compatible declarative migrations: governed updates apply bootstrap/schema
+  transformations declared in `skills/handoff-go/migrations.json` of the target
+  version strictly as data; the trusted updater interprets only bounded operations
+  over the managed block (`replace_routing`, `set_field`, `delete_field`), avoiding
+  arbitrary code execution before promotion while ensuring new schema requirements
+  are applied in the same governed transaction;
 - governance executable provenance = governance data provenance: `update.mjs run`
   resolves the trusted default-branch bootstrap, materializes the exact Handoff Go
   skill tree pinned there from a content-addressed git object store, and executes
