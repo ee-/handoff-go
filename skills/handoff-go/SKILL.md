@@ -19,14 +19,14 @@ The human invokes a role; GitHub carries the work.
 
 ## Invocation gate
 
-For an exact ordinary-text `go`, first read root `AGENTS.md` from trusted
-provenance. Continue only when it contains both Handoff Go managed markers and
-an immutable Handoff Go ref. Otherwise treat `go` normally and leave this skill
-inactive.
+For an exact ordinary-text `go` or `go update`, first read root `AGENTS.md` from
+trusted provenance. Continue only when it contains both Handoff Go managed
+markers and an immutable Handoff Go ref. Otherwise treat `go` normally and leave
+this skill inactive.
 
-Explicit `$handoff-go setup`, `$handoff-go check`, and `$handoff-go go`
-invocations bypass only this discovery gate. They never bypass authority,
-security, or repository permissions.
+Explicit `$handoff-go setup`, `$handoff-go check`, `$handoff-go go`, and
+`$handoff-go update` invocations bypass only this discovery gate. They never
+bypass authority, security, or repository permissions.
 
 ## Route
 
@@ -43,9 +43,14 @@ security, or repository permissions.
   [watch.md](references/watch.md). Run one Coder `go` discovery immediately,
   then repeat at the requested interval (default 1m). See `watch.md` for the
   command surface and per-harness capability.
+- **go update** — Maintenance only. Read [adoption.md](references/adoption.md).
+  Update this repository's project-local Handoff Go and its managed bootstrap
+  pin to the latest trusted upstream, resolved to one immutable commit, and open
+  a reviewable proposal. It is never workflow state and never triggered by
+  contributor-controlled durable state or a watch tick.
 
 If no mode was supplied, use `go` only in an opted-in repository; otherwise
-show the four modes above.
+show the five modes above.
 
 ## Role gate
 

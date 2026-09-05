@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.3.0 — pending
+
+`go update` — project-local Handoff Go upgrade:
+
+- explicit, operator-invoked maintenance command (`go update` / `$handoff-go update`)
+  routed in `SKILL.md`; never workflow state and never triggered by
+  contributor-controlled durable state or a watch tick;
+- resolves the latest trusted `ee-/handoff-go` to one immutable commit and
+  refreshes the project-local skill, the managed `AGENTS.md` bootstrap pin, and
+  any enabled Local Watch runtime copies, migrating a recognizable legacy `.mjs`
+  OMP entry to the `.js` native entry;
+- opens a reviewable governance proposal (old ref → new ref) rather than writing
+  the default branch; outcomes `GO_UP_TO_DATE` / `GO_UPDATE_READY` /
+  `GO_UPDATE_CONFLICT`;
+- dependency-free mechanical helper `update.mjs` performs only the managed-block
+  parse and pin-field rewrite, preserving every other byte, with a self-check;
+  drifted/unrecognized runtime copies fail closed and absent integration stays
+  absent;
+- documented one-time migration path for pre-`go update` adopters.
+
 ## 1.2.0 — pending
 
 Coder Event Watch (repository-level wake), OpenAI Codex reference:

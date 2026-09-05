@@ -55,12 +55,19 @@ go
 go watch        # keep this Coder session responsive (default 1m)
 go watch 5m     # custom interval, minimum 60s
 go watch stop   # stop watching
+go update       # update this repo's pinned Handoff Go (maintenance only)
 ```
 
 `go watch` runs one normal Coder `go` discovery immediately, then repeats at the
 requested interval. It is a wake mechanism, not workflow state; each tick reloads
 trusted governance and rediscover the durable GitHub state. Harnesses use their
 native scheduling/extension capability (see `skills/handoff-go/references/watch.md`).
+
+`go update` is explicit maintenance, never workflow state and never triggered by
+contributor content or a watch tick. It resolves the latest trusted `ee-/handoff-go`
+to one immutable commit, refreshes this repository's project-local skill, managed
+bootstrap pin, and enabled watch copies, and opens a reviewable governance
+proposal (see `skills/handoff-go/references/adoption.md`).
 
 **Event Watch (v1.2)** is an experimental reference implementation for
 repository-level automation: a durable GitHub state event wakes one fresh Coder
