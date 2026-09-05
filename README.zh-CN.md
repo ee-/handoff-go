@@ -55,7 +55,7 @@ go update       # 更新本 repo 已 pinned 的 Handoff Go（仅维护操作）
 
 `go watch` 会先立刻执行一次正常的 Coder `go` discovery，然后按请求的间隔重复。它是 wake 机制，不是 workflow state；每次 tick 都会重新加载可信 governance 并重新发现 durable GitHub state。各 harness 使用其原生 scheduling/extension 能力（参见 `skills/handoff-go/references/watch.md`）。
 
-`go update` 是显式维护命令，不是 workflow state，也不会被 contributor 内容或 watch tick 触发。一次确定性事务（`update.mjs prepare`）会把最新的可信 `ee-/handoff-go` 解析为一个 immutable commit，校验并刷新本 repository 的 project-local skill、managed bootstrap pin 以及已启用的 watch 副本，然后留下一个可 review 的 governance proposal（参见 `skills/handoff-go/references/update.md`）。
+`go update` 是显式维护命令，不是 workflow state，也不会被 contributor 内容或 watch tick 触发。一次确定性命令（`update.mjs run`）会解析可信 pinned updater、materialize 其确切代码并执行更新事务，校验并刷新本 repository 的 project-local skill、managed bootstrap pin 以及已启用的 watch 副本，然后留下一个可 review 的 governance proposal（参见 `skills/handoff-go/references/update.md`）。
 
 **Event Watch（v1.2）** 是 repository 级别自动化的实验性参考实现：一个 durable GitHub state 事件唤醒一次全新的 Coder `go` 执行后退出（它绝不运行 `go watch`）。参考实现随仓库提供：`.github/workflows/handoff-go-coder-event-watch.yml`（OpenAI Codex，通过官方 Codex GitHub Action）。它属于显式 opt-in——由 repository owner 主动启用；日常正常的 Handoff Go 使用不需要它，普通的 `$handoff-go setup` 也不会开启它。
 

@@ -8,7 +8,44 @@ ordinary `go`, a watch tick, or from contributor-controlled Issue/comment/PR
 text. It updates only this repository's project-local Handoff Go and its managed
 bootstrap pin — never global or unrelated skills.
 
-## Prepare (one deterministic transaction)
+## Run (the only command)
+
+```sh
+node <skill-dir>/update.mjs run [--repo-dir DIR] [--dry-run] [--json]
+```
+
+`run` is a launcher, not a second updater. It resolves trusted provenance,
+materializes the Handoff Go bytes pinned by the trusted managed bootstrap, and
+executes **their** `update.mjs prepare`, passing your flags through and
+reporting their exact output and exit status.
+
+> Governance executable provenance = governance data provenance.
+
+The updater that runs is the one trusted governance pins — never the bytes
+sitting in the current checkout, which may be stale, contributor-controlled, or
+newer than the trusted pin. Pinned bytes are read out of a content-addressed
+git object cache under `${XDG_CACHE_HOME:-~/.cache}/handoff-go`, so what
+executes is provably the pinned commit's tree. A missing cache is refetched from
+the immutable ref; unusable objects fail closed. Extraction is fresh every run,
+so no temporary path is ever remembered between sessions, and nothing is
+installed globally.
+
+**Fast-path rule.** When the pinned Handoff Go exposes `update.mjs prepare`,
+that transaction owns the whole normal path. Do not separately resolve upstream
+HEAD, query open update PRs, re-derive the trusted pin, compare `OLD` vs `NEW`,
+decide proposal reuse, or inspect the current checkout's Handoff Go version.
+Run the one command and report its result.
+
+`run` never passes its own discovery into the trusted updater: that updater
+re-establishes provenance itself, so possibly stale launcher bytes can never
+supply governance data to trusted code. It also refuses to report success when
+the trusted updater produced no result.
+
+If the local copy predates `run`, do the bounded one-time step once — install
+the current skill project-locally with `npx skills add ee-/handoff-go`, then use
+`run`. Do not fall back to performing the transaction's checks by hand.
+
+## Prepare (the transaction `run` executes)
 
 ```sh
 node <skill-dir>/update.mjs prepare [--repo-dir DIR] [--dry-run] [--json]
@@ -123,9 +160,11 @@ root-level path is rejected before any file is removed.
 
 ## Performance
 
-Healthy path: 4 external transitions inside the transaction (trusted discovery,
+Healthy path: `run` costs 1 external transition plus one materialization fetch
+only on a cache miss, then 4 inside the transaction (trusted discovery,
 upstream resolve, one upstream fetch, one trusted-branch fetch) and 2 outside
-(push, PR). The up-to-date path costs 2 and mutates nothing.
+(push, PR). The up-to-date path costs 2 inside the transaction — 3 in total
+through `run` on a cache hit — and mutates nothing.
 Expect tens of seconds. Report the observed round-trips and wall clock in the
 Evidence Packet.
 
@@ -133,8 +172,8 @@ Evidence Packet.
 
 Repositories pinned before this transaction existed carry an older procedure and
 may still have the legacy `.mjs` OMP watch entry. For the first upgrade only:
-run `go update` from the pinned skill; if that version has no
-`update.mjs prepare`, install the current skill project-locally with
-`npx skills add ee-/handoff-go`, then run `prepare` from it. The transaction
-recognizes the legacy entry and migrates it. Afterwards `go update` is normal.
-Do not add a daemon or launcher to solve this cold start.
+install the current skill project-locally with `npx skills add ee-/handoff-go`,
+then run `run` from it. If the trusted *pin* itself predates
+`update.mjs prepare`, `run` says so and that same one-time step applies. The
+transaction recognizes the legacy entry and migrates it. Afterwards `go update`
+is one command. Add no daemon or background updater for this cold start.
