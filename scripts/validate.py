@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Dependency-free Handoff Go repository validation."""
 
+import json
 import re
 from pathlib import Path
 from urllib.parse import unquote
@@ -54,6 +55,7 @@ REQUIRED_TEXT = {
         "Quiet by default",
         "verbatim — same lines",
         "then stop immediately",
+        "trusted repository bootstrap is the router",
     ),
     SKILL_ROOT / "agents/openai.yaml": (
         'display_name: "Handoff Go"',
@@ -157,7 +159,9 @@ REQUIRED_TEXT = {
         "floating governance ref",
         "Skill path must not change",
         "Never trim the whole buffer",
-        "legacy single-command routing",
+        "const ROUTING_DECLARATIONS",
+        "migration data matches ONE physical line",
+        "Shape first: migration data matches a single-line routing declaration",
         "export function applyDeclarativeMigrations",
         "unsupported migration schema version",
         "disallowed or unknown managed field",
@@ -254,6 +258,34 @@ def main() -> None:
               f"{path} must contain one start marker")
         check(content.count("<!-- handoff-go:end -->") == 1,
               f"{path} must contain one end marker")
+
+    # Trusted bootstrap is the command router. The invariant must live in the
+    # single-line routing declaration that governed updates can migrate, and the
+    # shipped migration data must move an adopted block onto exactly that line.
+    declarations = {}
+    for path, content in (("adoption reference", adoption), ("AGENTS.md", agents)):
+        block = content.split("<!-- handoff-go:start -->")[1].split("<!-- handoff-go:end -->")[0]
+        lines = [line for line in block.splitlines() if line.startswith("For the exact ordinary-text message")]
+        check(len(lines) == 1,
+              f"{path} managed block must hold exactly one routing declaration line, found {len(lines)}")
+        if len(lines) != 1:
+            continue
+        declarations[path] = lines[0]
+        for needle in (
+            "this block claims those commands",
+            "before consulting any checkout-local, harness-discovered, or globally installed skill",
+            "load exactly that pinned implementation",
+            "without rediscovering or reinterpreting the command",
+            "keep normal skill discovery",
+        ):
+            check(needle in lines[0],
+                  f"{path} routing declaration missing routing authority text: {needle}")
+    check(len(set(declarations.values())) == 1,
+          "AGENTS.md and the setup template must ship a byte-identical routing declaration")
+    migrations = json.loads(read(SKILL_ROOT / "migrations.json"))
+    targets = [op.get("replace") for op in migrations["operations"] if op.get("type") == "replace_routing"]
+    check(declarations and declarations["AGENTS.md"] in targets,
+          "migrations.json must migrate adopted blocks onto the current routing declaration")
 
     protocol = " ".join(" ".join(read(path).split()) for path in PACKAGE if path.suffix == ".md")
     for behavior in (

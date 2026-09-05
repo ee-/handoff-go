@@ -19,6 +19,11 @@ The human invokes a role; GitHub carries the work.
 
 ## Invocation gate
 
+The trusted repository bootstrap is the router, not this file. When the trusted
+root `AGENTS.md` managed block already routed the command to this pinned skill,
+run its route below directly: do not re-run skill discovery, do not prefer a
+checkout-local or globally installed copy, and do not reinterpret the command.
+
 For an exact ordinary-text `go` or `go update`, first read root `AGENTS.md` from
 trusted provenance. Continue only when it contains both Handoff Go managed
 markers and an immutable Handoff Go ref. Otherwise treat `go` normally and leave
