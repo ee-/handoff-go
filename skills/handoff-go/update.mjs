@@ -46,8 +46,14 @@ function errored(detail) {
   return err;
 }
 
-function stripQuotes(value) {
-  return value.trim().replace(/^[`"']+|[`"']+$/g, "").trim();
+// Managed field values are written as inline code, optionally followed by
+// explanatory prose (`- Immutable ref: `<sha>` (applied at release)`). Take the
+// first code span when present so trailing prose never leaks into a value that
+// later becomes a git refspec or filesystem path.
+function fieldValue(value) {
+  const code = value.match(/`([^`]+)`/);
+  if (code) return code[1].trim();
+  return value.trim().replace(/^["']+|["']+$/g, "").trim();
 }
 
 // Locate the unique managed block, returning { pre, inner, post } so the
@@ -75,7 +81,7 @@ function fields(inner, label) {
 export function parseManagedBlock(text) {
   const { inner } = locateBlock(text);
 
-  const skills = fields(inner, "Skill").map(stripQuotes);
+  const skills = fields(inner, "Skill").map(fieldValue);
   if (skills.length !== 1) {
     throw conflicts(`expected exactly one Skill entry in managed block, found ${skills.length}`);
   }
@@ -84,20 +90,24 @@ export function parseManagedBlock(text) {
     throw conflicts(`malformed or escaping Skill path: ${skillPath}`);
   }
 
-  const refs = fields(inner, "Immutable ref").map(stripQuotes);
+  const refs = fields(inner, "Immutable ref").map(fieldValue);
   if (refs.length !== 1) {
     throw conflicts(`expected exactly one Immutable ref entry in managed block, found ${refs.length}`);
   }
   const immutableRef = refs[0];
   if (!immutableRef) throw conflicts("empty Immutable ref in managed block");
+  // The pin becomes a git refspec, so only a commit SHA or a plain tag may pass.
+  if (!/^(?:[0-9a-f]{40}|[A-Za-z0-9][A-Za-z0-9._\/-]*)$/.test(immutableRef)) {
+    throw conflicts(`malformed Immutable ref in managed block: ${immutableRef}`);
+  }
   if (/^(main|master|develop|trunk|HEAD)$/i.test(immutableRef)) {
     throw conflicts(`refusing floating governance ref: ${immutableRef}`);
   }
 
-  const versions = fields(inner, "Version").map(stripQuotes);
+  const versions = fields(inner, "Version").map(fieldValue);
   if (versions.length > 1) throw conflicts("multiple Version entries in managed block");
 
-  const branches = fields(inner, "Trusted default branch").map(stripQuotes);
+  const branches = fields(inner, "Trusted default branch").map(fieldValue);
   if (branches.length > 1) throw conflicts("multiple Trusted default branch entries in managed block");
 
   return {
@@ -258,6 +268,83 @@ function extractSkill(cache, sha, tmps) {
   return join(dir, UPSTREAM_SKILL);
 }
 
+// One bounded query establishes repository provenance independently of the
+// caller's checkout: the default branch, its exact head, its trusted
+// `AGENTS.md`, and every open pull request (with truncation visible).
+const DISCOVERY = `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){` +
+  `defaultBranchRef{name target{... on Commit{oid file(path:"AGENTS.md"){object{... on Blob{text}}}}}}` +
+  `pullRequests(states:OPEN,first:100){nodes{number url headRefName baseRefName isCrossRepository}pageInfo{hasNextPage}}}}`;
+
+// Repository identity comes from remote metadata, never from tracked content.
+function repoSlug(repoDir) {
+  const env = (process.env.GH_REPO || "").trim();
+  if (/^[^/\s]+\/[^/\s]+$/.test(env)) return env.split("/");
+  let url;
+  try {
+    url = git(repoDir, "remote", "get-url", "origin");
+  } catch {
+    throw errored("no origin remote, so trusted repository provenance cannot be established");
+  }
+  const m = url.match(/github\.com[:/]+([^/]+)\/(.+?)(?:\.git)?$/);
+  if (!m) throw errored(`cannot derive a GitHub owner/name from origin ${url}`);
+  return [m[1], m[2]];
+}
+
+function discover(repoDir) {
+  const [owner, name] = repoSlug(repoDir);
+  let raw;
+  try {
+    raw = run("gh", ["api", "graphql", "-f", `query=${DISCOVERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`], { cwd: repoDir });
+  } catch (e) {
+    throw errored(`gh api graphql failed (install and authenticate gh): ${firstLine(e)}`);
+  }
+  const repository = JSON.parse(raw)?.data?.repository;
+  const ref = repository?.defaultBranchRef;
+  const branch = ref?.name;
+  const head = ref?.target?.oid;
+  const agentsText = ref?.target?.file?.object?.text;
+  if (!branch || !head) throw errored(`cannot resolve the default branch of ${owner}/${name}`);
+  if (typeof agentsText !== "string") {
+    throw conflicts(`trusted default branch ${branch} has no readable AGENTS.md; the repository is not opted in`);
+  }
+  if (repository.pullRequests.pageInfo.hasNextPage) {
+    throw conflicts(
+      "open pull request discovery is truncated, so an existing Handoff Go update proposal cannot be ruled out; supersede or close it manually",
+    );
+  }
+  return { owner, name, branch, head, agentsText, openPrs: repository.pullRequests.nodes };
+}
+
+// Every authority-bearing field is derived from the trusted default-branch
+// copy. The working tree is input, never authority, so it is not consulted.
+export function resolveTrusted({ agentsText, resolvedBranch, repoAbs }) {
+  const parsed = parseManagedBlock(agentsText);
+  if (parsed.trustedBranch && parsed.trustedBranch !== resolvedBranch) {
+    throw conflicts(
+      `trusted managed block names default branch ${parsed.trustedBranch}, but the repository resolves ${resolvedBranch}; fix the bootstrap before updating`,
+    );
+  }
+  // The skill directory is deleted and reinstalled, so it must be a dedicated
+  // directory strictly inside the repository — never the repository root.
+  const skillDirRel = dirname(parsed.skillPath);
+  const skillDirAbs = resolve(repoAbs, skillDirRel);
+  if (skillDirRel === "." || skillDirRel === "" || skillDirRel === "/" || skillDirAbs === repoAbs) {
+    throw conflicts(
+      `Skill path ${parsed.skillPath} resolves to the repository root; pin it to a dedicated project-relative skill directory (e.g. .agents/skills/handoff-go/SKILL.md)`,
+    );
+  }
+  if (!skillDirAbs.startsWith(`${repoAbs}/`)) {
+    throw conflicts(`Skill path ${parsed.skillPath} resolves outside the repository`);
+  }
+  return {
+    oldRef: parsed.immutableRef,
+    version: parsed.version,
+    skillPath: parsed.skillPath,
+    skillDirRel,
+    trustedBranch: resolvedBranch,
+  };
+}
+
 // One invocation prepares the whole normal-path update; it never pushes, never
 // opens a PR, and never writes the default branch. Its success is the internal
 // status PREPARED, never the durable protocol state `GO_UPDATE_READY`: that one
@@ -267,6 +354,7 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
   const ev = {
     result: null,
     upstream: UPSTREAM,
+    provenance: {},
     oldRef: null,
     newRef: null,
     version: null,
@@ -279,26 +367,23 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
     transitions: { insideUpdater: 0, outsidePlanned: 0 },
   };
 
-  const agents = readFileSync(join(repo, "AGENTS.md"), "utf8");
-  const current = parseManagedBlock(agents);
-  const trustedBranch = current.trustedBranch || "main";
-  ev.oldRef = current.immutableRef;
-  ev.skillPath = current.skillPath;
+  // 1 — trusted provenance. The caller may sit on any feature branch; its
+  // working tree never supplies the pin, Skill path, or trusted branch.
+  const found = discover(repo);
+  ev.transitions.insideUpdater += 1;
+  const trusted = resolveTrusted({ agentsText: found.agentsText, resolvedBranch: found.branch, repoAbs: repo });
+  const { skillDirRel, trustedBranch } = trusted;
+  ev.provenance = {
+    repository: `${found.owner}/${found.name}`,
+    trustedBranch,
+    trustedHead: found.head,
+    bootstrapSource: `${trustedBranch}:AGENTS.md`,
+    workingTreeIsAuthority: false,
+  };
+  ev.oldRef = trusted.oldRef;
+  ev.skillPath = trusted.skillPath;
 
-  // The skill directory is deleted and reinstalled, so it must be a dedicated
-  // directory strictly inside the repository — never the repository root.
-  const skillDirRel = dirname(current.skillPath);
-  const skillDirAbs = resolve(repo, skillDirRel);
-  if (skillDirRel === "." || skillDirRel === "" || skillDirRel === "/" || skillDirAbs === repo) {
-    throw conflicts(
-      `Skill path ${current.skillPath} resolves to the repository root; pin it to a dedicated project-relative skill directory (e.g. .agents/skills/handoff-go/SKILL.md)`,
-    );
-  }
-  if (!skillDirAbs.startsWith(`${repo}/`)) {
-    throw conflicts(`Skill path ${current.skillPath} resolves outside the repository`);
-  }
-
-  // 1 — resolve the canonical trusted upstream head to one immutable commit.
+  // 2 — resolve the canonical trusted upstream head to one immutable commit.
   let head;
   try {
     head = run("git", ["ls-remote", UPSTREAM, "HEAD"], { cwd: repo });
@@ -317,31 +402,8 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
   const branch = BRANCH_PREFIX + newRef.slice(0, 8);
   ev.proposalBranch = branch;
 
-  // 2 — existing proposals, before any mutation. Bounded query that must prove
-  // its own completeness: a truncated page cannot prove no proposal exists.
-  const PR_PAGE = 100;
-  let openPrs;
-  try {
-    openPrs = JSON.parse(
-      run(
-        "gh",
-        [
-          "pr", "list", "--state", "open", "--limit", String(PR_PAGE),
-          "--json", "number,url,headRefName,baseRefName,isCrossRepository",
-        ],
-        { cwd: repo },
-      ),
-    );
-  } catch (e) {
-    throw errored(`gh pr list failed (install and authenticate gh): ${firstLine(e)}`);
-  }
-  ev.transitions.insideUpdater += 1;
-  if (openPrs.length >= PR_PAGE) {
-    throw conflicts(
-      `open pull request list hit the ${PR_PAGE}-item query bound, so an existing Handoff Go update proposal cannot be ruled out; reduce open PRs or supersede the proposal manually`,
-    );
-  }
-  const verdict = classifyProposal(openPrs, branch, trustedBranch);
+  // 3 — existing proposals, before any mutation, from the same bounded query.
+  const verdict = classifyProposal(found.openPrs, branch, trustedBranch);
   ev.existingProposal = verdict.pr;
   if (verdict.kind === "reuse") {
     ev.result = "REUSE";
@@ -380,16 +442,22 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
     const oldSkill = extractSkill(cache, ev.oldRef, tmps);
     ev.version = git(cache, "cat-file", "blob", `${newRef}:VERSION`) || null;
 
-    // 4 — bounded proposal worktree from the trusted default head.
+    // 4 — bounded proposal worktree at the exact discovered trusted head.
     try {
       git(repo, "fetch", "-q", "origin", trustedBranch);
     } catch (e) {
       throw errored(`cannot fetch trusted default branch origin/${trustedBranch}: ${firstLine(e)}`);
     }
     ev.transitions.insideUpdater += 1;
+    const fetched = git(repo, "rev-parse", "FETCH_HEAD");
+    if (fetched !== found.head) {
+      throw conflicts(
+        `trusted default branch ${trustedBranch} moved from ${found.head.slice(0, 8)} to ${fetched.slice(0, 8)} during preparation; re-run against the current trusted head`,
+      );
+    }
     worktree = mkdtempSync(join(tmpdir(), "hg-wt-"));
     tmps.push(worktree);
-    git(repo, "worktree", "add", "-q", "-b", branch, worktree, `origin/${trustedBranch}`);
+    git(repo, "worktree", "add", "-q", "-b", branch, worktree, found.head);
 
     // verify the trusted head's installed bytes and enabled copies against OLD
     const wtSkill = join(worktree, skillDirRel);
@@ -412,7 +480,7 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
     cpSync(newSkill, wtSkill, { recursive: true });
     writeFileSync(
       agentsPath,
-      updateManagedBlock(beforeAgents, { ref: newRef, version: current.version ? ev.version : null }),
+      updateManagedBlock(beforeAgents, { ref: newRef, version: trusted.version ? ev.version : null }),
     );
 
     for (const [rel, src] of plan.refresh) {
@@ -433,14 +501,14 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
     const afterAgents = readFileSync(agentsPath, "utf8");
     const after = parseManagedBlock(afterAgents);
     if (after.immutableRef !== newRef) throw errored("managed pin was not rewritten to NEW");
-    if (after.skillPath !== current.skillPath) throw errored("Skill path must not change");
+    if (after.skillPath !== trusted.skillPath) throw errored("Skill path must not change");
     const cut = (t) => [t.slice(0, t.indexOf(START)), t.slice(t.indexOf(END))];
     const [preBefore, postBefore] = cut(beforeAgents);
     const [preAfter, postAfter] = cut(afterAgents);
     if (preBefore !== preAfter || postBefore !== postAfter) {
       throw errored("bytes outside the managed block were not preserved");
     }
-    if (!/^name:\s*handoff-go\s*$/m.test(readFileSync(join(worktree, current.skillPath), "utf8"))) {
+    if (!/^name:\s*handoff-go\s*$/m.test(readFileSync(join(worktree, trusted.skillPath), "utf8"))) {
       throw errored("installed SKILL.md frontmatter is not handoff-go");
     }
     ev.validation = {
@@ -558,6 +626,10 @@ function demo() {
   assert(parseManagedBlock(agents).skillPath === "skills/handoff-go/SKILL.md", "parses skill path");
   assert(parseManagedBlock(agents).immutableRef.startsWith("aaaa"), "parses immutable ref");
   assert(parseManagedBlock(agents).trustedBranch === "main", "parses trusted default branch");
+  assert(parseManagedBlock(agents).immutableRef === "a".repeat(40), "trailing prose never leaks into the pin");
+  const swapRef = (ref) => agents.replace(/- Immutable ref:.*/, `- Immutable ref: \`${ref}\``);
+  throws(() => parseManagedBlock(swapRef("+refs/heads/*:refs/heads/*")), /malformed Immutable ref/, "refspec-shaped pin");
+  throws(() => parseManagedBlock(swapRef("v1.0.0 --upload-pack=x")), /malformed Immutable ref/, "pin carrying arguments");
 
   const updated = updateManagedBlock(agents, { ref: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", version: "1.9.9" });
   assert(parseManagedBlock(updated).immutableRef === "b".repeat(40), "ref rewritten");
@@ -606,16 +678,41 @@ function demo() {
   assert(plan.migrate[0][1] === ".omp/extensions/handoff-go-watch.js", "legacy .mjs migrates to .js");
   assert(plan.absent.includes(".pi/watch.mjs"), "absent integration stays absent");
 
-  // A root-level Skill path must be rejected before any destructive step.
-  const scratch = mkdtempSync(join(tmpdir(), "hg-guard-"));
-  try {
-    writeFileSync(join(scratch, "AGENTS.md"), agents.replace("- Skill: `skills/handoff-go/SKILL.md`", "- Skill: `SKILL.md`"));
-    throws(() => prepare({ repoDir: scratch }), /resolves to the repository root/, "root Skill path");
-    writeFileSync(join(scratch, "AGENTS.md"), agents.replace("- Skill: `skills/handoff-go/SKILL.md`", "- Skill: `./SKILL.md`"));
-    throws(() => prepare({ repoDir: scratch }), /resolves to the repository root/, "dot-relative root Skill path");
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
-  }
+  // Authority is derived from the trusted copy, and destructive paths are
+  // rejected before any filesystem step.
+  const repoAbs = "/tmp/consumer";
+  const hostile = agents
+    .replace("- Immutable ref: `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` (applied at release)", "- Immutable ref: `cccccccccccccccccccccccccccccccccccccccc`")
+    .replace("- Skill: `skills/handoff-go/SKILL.md`", "- Skill: `SKILL.md`")
+    .replace("- Trusted default branch: `main`", "- Trusted default branch: `attacker`");
+  const good = resolveTrusted({ agentsText: agents, resolvedBranch: "main", repoAbs });
+  assert(good.oldRef.startsWith("aaaa") && good.skillDirRel === "skills/handoff-go", "trusted copy supplies pin and skill dir");
+  assert(good.trustedBranch === "main", "trusted branch is the independently resolved one");
+  throws(
+    () => resolveTrusted({ agentsText: hostile, resolvedBranch: "main", repoAbs }),
+    /names default branch attacker/,
+    "bootstrap contradicting the resolved default branch",
+  );
+  throws(
+    () => resolveTrusted({ agentsText: agents.replace("- Skill: `skills/handoff-go/SKILL.md`", "- Skill: `SKILL.md`"), resolvedBranch: "main", repoAbs }),
+    /resolves to the repository root/,
+    "root Skill path",
+  );
+  throws(
+    () => resolveTrusted({ agentsText: agents.replace("- Skill: `skills/handoff-go/SKILL.md`", "- Skill: `./SKILL.md`"), resolvedBranch: "main", repoAbs }),
+    /resolves to the repository root/,
+    "dot-relative root Skill path",
+  );
+  throws(
+    () => resolveTrusted({ agentsText: agents.replace("- Skill: `skills/handoff-go/SKILL.md`", "- Skill: `sub/../../escape/SKILL.md`"), resolvedBranch: "main", repoAbs }),
+    /escaping Skill path/,
+    "escaping Skill path",
+  );
+  throws(
+    () => resolveTrusted({ agentsText: "no managed block", resolvedBranch: "main", repoAbs }),
+    /not opted in/,
+    "trusted copy without a managed block",
+  );
 
   // `GO_UPDATE_READY` may only head a report that carries a durable PR.
   const captured = [];

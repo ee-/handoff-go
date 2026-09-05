@@ -21,6 +21,11 @@
   the trusted default head, exact-byte install, pin/version rewrite, recognized
   runtime refresh/migration, consumer-side validation, managed-scope guard, and
   one local commit — then emits machine-readable evidence (`--json`);
+- update authority is derived only from the trusted default branch: one bounded
+  discovery query resolves the default branch, its exact head, that branch's
+  `AGENTS.md`, and open proposals, so a contributor-controlled checkout can
+  never supply the pin, Skill path, or trusted branch; the transaction also
+  fails closed if the trusted head moves mid-preparation;
 - `prepare` reports only the internal status `PREPARED`; `GO_UPDATE_READY` is
   emitted by the Coder after the proposal PR is durably created, and an existing
   same-`NEW` proposal is reused under that same standard outcome;

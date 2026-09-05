@@ -16,20 +16,31 @@ node <skill-dir>/update.mjs prepare [--repo-dir DIR] [--dry-run] [--json]
 
 One invocation does all mechanically unique work and stops at the first failure:
 
-1. parse the trusted managed block (one Skill path, one immutable ref);
-2. resolve the canonical trusted upstream head to one immutable commit `NEW`;
-3. `GO_UP_TO_DATE` if `NEW` already equals the pin — no mutation;
-4. detect an existing open Handoff Go update proposal **before** any mutation;
-5. fetch `OLD` and `NEW` in one bounded upstream fetch, then compare locally;
-6. add a bounded proposal worktree on `handoff-go/update-<short-NEW>` from the
-   trusted default head — never the default branch itself;
-7. verify installed bytes and enabled runtime copies against `OLD`; a drifted or
+1. establish trusted provenance in one bounded query: the repository's default
+   branch, its exact head, that branch's `AGENTS.md`, and every open pull
+   request;
+2. derive the pin (`OLD`), Skill path, and trusted branch from that trusted
+   copy, failing closed if its managed block is missing, malformed, or names a
+   different default branch;
+3. resolve the canonical trusted upstream head to one immutable commit `NEW`;
+4. `GO_UP_TO_DATE` if `NEW` already equals the pin — no mutation;
+5. classify any existing open update proposal **before** any mutation;
+6. fetch `OLD` and `NEW` in one bounded upstream fetch, then compare locally;
+7. add a bounded proposal worktree on `handoff-go/update-<short-NEW>` at the
+   exact discovered trusted head — never the default branch itself, and fail
+   closed if that head moved during preparation;
+8. verify installed bytes and enabled runtime copies against `OLD`; a drifted or
    unrecognized copy fails closed — never overwrite local edits;
-8. install exact `NEW` skill bytes and rewrite only the managed pin/version;
-9. refresh recognized enabled watch copies, migrating a legacy `.mjs` entry to
-   the `.js` entry; absent integration stays absent;
-10. validate the prepared state, reject any change outside managed scope, and
+9. install exact `NEW` skill bytes and rewrite only the managed pin/version;
+10. refresh recognized enabled watch copies, migrating a legacy `.mjs` entry to
+    the `.js` entry; absent integration stays absent;
+11. validate the prepared state, reject any change outside managed scope, and
     make exactly one local commit.
+
+The caller may run this from any branch. The working tree is input, never
+authority: the pin, Skill path, and trusted branch always come from the trusted
+default-branch copy, so a contributor-controlled checkout cannot steer an
+update. The caller's tree is left untouched.
 
 The trusted source is fixed to `ee-/handoff-go`; project or contributor content
 can never redirect it. Installed bytes and the pin always come from the same
@@ -102,7 +113,7 @@ authority. An existing proposal for the same `NEW` is reused and reported with
 the standard `GO_UPDATE_READY` and its PR — never duplicated and never a new
 outcome name. One targeting a different ref, or a same-repository proposal onto
 the wrong base, stops with a conflict; superseding it is an Architect decision,
-not the updater's. If the open-PR query hits its bound, the transaction fails
+not the updater's. If proposal discovery is truncated, the transaction fails
 closed rather than assume no proposal exists.
 
 An existing local `handoff-go/update-<short-NEW>` branch is never reset: it may
@@ -112,8 +123,9 @@ root-level path is rejected before any file is removed.
 
 ## Performance
 
-Healthy path: 4 external transitions inside the transaction (resolve, proposal
-check, one upstream fetch, one trusted-branch fetch) and 2 outside (push, PR).
+Healthy path: 4 external transitions inside the transaction (trusted discovery,
+upstream resolve, one upstream fetch, one trusted-branch fetch) and 2 outside
+(push, PR). The up-to-date path costs 2 and mutates nothing.
 Expect tens of seconds. Report the observed round-trips and wall clock in the
 Evidence Packet.
 
