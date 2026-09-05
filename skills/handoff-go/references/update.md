@@ -114,6 +114,11 @@ Build the PR body from the `--json` evidence: `oldRef`, `newRef`, `version`,
 If either step fails, report `GO_UPDATE_CONFLICT`/`GO_UPDATE_ERROR` with the
 exact remediation — never `GO_UPDATE_READY`.
 
+After `GO_UPDATE_READY` is emitted, stop immediately. Do not explain previous
+promotions or inspect PR history, do not delete or clean up old branches, and do
+not review or merge proposals. `Next Actor: ARCHITECT` is the sole promotion
+routing; do not tell the user to merge or await promotion.
+
 ## Consumer validation boundary
 
 Verify exact installation plus this project's own integration:
@@ -153,6 +158,26 @@ Do not print `GO_UPDATED` — the change is only durable once the Architect
 reviews the exact head and promotes the proposal to the trusted default branch.
 If the host cannot push or open the PR, stop with the exact remediation; never
 claim an update that was not persisted.
+
+### Maintenance stop boundary
+
+`go update` is strictly dependency maintenance through durable proposal
+creation. Once it emits a terminal maintenance outcome (`GO_UP_TO_DATE`,
+`GO_UPDATE_READY`, `GO_UPDATE_CONFLICT`, or `GO_UPDATE_ERROR`), it stops:
+
+1. **Stop immediately**: no model-authored commentary, explanations, or summaries
+   after the protocol outcome.
+2. **No promotion-history narration**: do not investigate, explain, or narrate why
+   the trusted current pin changed (e.g. whether a previous PR merged). The current
+   trusted pin is the only input state.
+3. **No branch cleanup**: do not delete local or remote branches from prior
+   promoted proposals. Branch lifecycle belongs to the promotion/cleanup owner,
+   never dependency maintenance.
+4. **No promotion management**: do not approve, review, merge, close, or reopen
+   proposals, and do not tell the user to type `merge`. `Next Actor: ARCHITECT` is
+   the sole promotion routing.
+5. **Diagnostics are read-only**: `--verbose` and `--json` expose evidence on
+   demand, but never perform promotion or cleanup actions.
 
 ### Quiet by default and diagnostic modes
 

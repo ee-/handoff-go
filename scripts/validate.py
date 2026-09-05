@@ -52,6 +52,7 @@ REQUIRED_TEXT = {
         "GITHUB_ACCESS_REQUIRED",
         "go update",
         "Quiet by default",
+        "Stop immediately after emitting the terminal",
     ),
     SKILL_ROOT / "agents/openai.yaml": (
         'display_name: "Handoff Go"',
@@ -106,6 +107,8 @@ REQUIRED_TEXT = {
         "executable provenance = governance data provenance",
         "Fast-path rule",
         "Quiet by default",
+        "Maintenance stop boundary",
+        "sole promotion routing",
     ),
     Path("AGENTS.md"): ("go update",),
     Path("README.md"): ("npx skills add ee-/handoff-go",),
