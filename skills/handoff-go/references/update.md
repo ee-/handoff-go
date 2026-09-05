@@ -14,7 +14,7 @@ Execute the deterministic bootstrap command. It materializes and runs the
 trusted pinned updater without evaluating checkout JavaScript:
 
 ```sh
-REPO="$PWD"; STORE="${XDG_CACHE_HOME:-$HOME/.cache}/handoff-go/objects.git"; [ -d "$STORE" ] || git init --bare -q "$STORE"; git fetch -q origin HEAD && REF=$(git show FETCH_HEAD:AGENTS.md | grep -m1 'Immutable ref' | sed -n 's/.*`\([a-zA-Z0-9._\/-]*\)`.*/\1/p') && (git --git-dir="$STORE" cat-file -e "$REF^{commit}" 2>/dev/null || git --git-dir="$STORE" fetch --depth=1 -q https://github.com/ee-/handoff-go.git "$REF") && TMP=$(mktemp -d) && git --git-dir="$STORE" archive "$REF" skills/handoff-go/update.mjs | tar -x -C "$TMP" && (cd "$TMP/skills/handoff-go" && node update.mjs prepare --repo-dir "$REPO"); STATUS=$?; rm -rf "$TMP"; exit $STATUS
+REPO="$PWD"; STORE="${XDG_CACHE_HOME:-$HOME/.cache}/handoff-go/objects.git"; [ -d "$STORE" ] || git init --bare -q "$STORE"; git fetch -q origin HEAD && REF=$(git show FETCH_HEAD:AGENTS.md | node -e 'const b=fs.readFileSync(0,"utf8"),S="<!-- handoff-go:start -->",E="<!-- handoff-go:end -->";if(b.split(S).length!==2||b.split(E).length!==2)process.exit(1);const s=b.indexOf(S),e=b.indexOf(E);if(s===-1||e===-1||s>=e)process.exit(1);const ms=[...b.slice(s+S.length,e).matchAll(/^[ \t]*-[ \t]*Immutable ref:[ \t]*(.+)$/gm)];if(ms.length!==1)process.exit(1);const v=ms[0][1],c=v.match(/`([^`]+)`/),r=(c?c[1]:v).trim().replace(/^["\x27]+|["\x27]+$/g,"").trim();if(!/^(?:[0-9a-f]{40}|[A-Za-z0-9][A-Za-z0-9._\/-]*)$/.test(r)||/^(main|master|develop|trunk|HEAD)$/i.test(r))process.exit(1);process.stdout.write(r);') && [ -n "$REF" ] && (git --git-dir="$STORE" cat-file -e "$REF^{commit}" 2>/dev/null || git --git-dir="$STORE" fetch --depth=1 -q https://github.com/ee-/handoff-go.git "$REF") && TMP=$(mktemp -d) && git --git-dir="$STORE" archive "$REF" skills/handoff-go/update.mjs | tar -x -C "$TMP" && (cd "$TMP/skills/handoff-go" && node update.mjs prepare --repo-dir "$REPO"); STATUS=$?; rm -rf "$TMP"; exit $STATUS
 ```
 
 > Governance executable provenance = governance data provenance.
@@ -25,8 +25,11 @@ contain malicious top-level code.
 
 1. `git fetch -q origin HEAD` fetches the remote repository's default branch into
    `FETCH_HEAD`, independent of the current checkout branch or working tree.
-2. `git show FETCH_HEAD:AGENTS.md` reads the trusted immutable pin from remote
-   provenance.
+2. The remote default branch's `AGENTS.md` is parsed to locate the unique
+   `<!-- handoff-go:start/end -->` block, extract exactly one `Immutable ref`,
+   and validate that it is an immutable commit or tag. Text before or after the
+   managed block is ignored; duplicate or missing refs inside the block fail
+   closed.
 3. The content-addressed git object store (`${XDG_CACHE_HOME:-~/.cache}/handoff-go/objects.git`)
    materializes the exact pinned commit from `https://github.com/ee-/handoff-go.git`
    if not already cached.
