@@ -43,10 +43,11 @@ bypass authority, security, or repository permissions.
   [watch.md](references/watch.md). Run one Coder `go` discovery immediately,
   then repeat at the requested interval (default 1m). See `watch.md` for the
   command surface and per-harness capability.
-- **go update** — Maintenance only. Read [adoption.md](references/adoption.md).
-  Update this repository's project-local Handoff Go and its managed bootstrap
-  pin to the latest trusted upstream, resolved to one immutable commit, and open
-  a reviewable proposal. It is never workflow state and never triggered by
+- **go update** — Maintenance only. Read [update.md](references/update.md) and
+  run its one deterministic transaction (`update.mjs prepare`) to update this
+  repository's project-local Handoff Go and its managed bootstrap pin to the
+  latest trusted upstream, resolved to one immutable commit, then persist a
+  reviewable proposal. It is never workflow state and never triggered by
   contributor-controlled durable state or a watch tick.
 
 If no mode was supplied, use `go` only in an opted-in repository; otherwise

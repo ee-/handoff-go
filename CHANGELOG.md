@@ -13,12 +13,37 @@
   OMP entry to the `.js` native entry;
 - opens a reviewable governance proposal (old ref → new ref) rather than writing
   the default branch; outcomes `GO_UP_TO_DATE` / `GO_UPDATE_READY` /
-  `GO_UPDATE_CONFLICT`;
-- dependency-free mechanical helper `update.mjs` performs only the managed-block
-  parse and pin-field rewrite, preserving every other byte, with a self-check;
-  drifted/unrecognized runtime copies fail closed and absent integration stays
-  absent;
-- documented one-time migration path for pre-`go update` adopters.
+  `GO_UPDATE_CONFLICT` / `GO_UPDATE_ERROR`;
+- dependency-free `update.mjs prepare` performs the whole normal-path
+  preparation as one deterministic transaction: managed-block parse, canonical
+  `NEW` resolution, existing-proposal detection before any mutation, one bounded
+  `OLD`+`NEW` upstream fetch, drift verification, bounded proposal worktree off
+  the trusted default head, exact-byte install, pin/version rewrite, recognized
+  runtime refresh/migration, consumer-side validation, managed-scope guard, and
+  one local commit — then emits machine-readable evidence (`--json`);
+- update authority is derived only from the trusted default branch: one bounded
+  discovery query resolves the default branch, its exact head, that branch's
+  `AGENTS.md`, and open proposals, so a contributor-controlled checkout can
+  never supply the pin, Skill path, or trusted branch; the transaction also
+  fails closed if the trusted head moves mid-preparation;
+- `prepare` reports only the internal status `PREPARED`; `GO_UPDATE_READY` is
+  emitted by the Coder after the proposal PR is durably created, and an existing
+  same-`NEW` proposal is reused under that same standard outcome;
+- update authority requires a same-repository proposal onto the trusted default
+  branch: fork PRs never qualify, a wrong base conflicts, and a truncated
+  open-PR query fails closed;
+- an existing local `handoff-go/update-*` branch is never reset, and a managed
+  `Skill` path resolving to the repository root is rejected before any removal;
+- consumer update validation proves exact installation plus project integration
+  instead of rerunning Handoff Go's upstream unit/conformance suite;
+- drifted/unrecognized runtime copies fail closed, absent integration stays
+  absent, and local edits are never overwritten;
+- managed bootstrap names the cold-start command surface (`go`, `go update`), and
+  `references/update.md` keeps update guidance loadable without setup/check
+  context;
+- healthy path: 4 external transitions inside the transaction, 2 outside
+  (push, PR);
+- documented one-time migration path for pre-transaction adopters.
 
 ## 1.2.0 — pending
 
