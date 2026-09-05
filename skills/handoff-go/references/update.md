@@ -177,15 +177,22 @@ code.
 
 Allowed operations are bounded strictly to the Handoff Go managed block:
 - `replace_routing`: replaces a uniquely identified legacy routing sentence with
-  the target routing sentence (idempotent no-op if already at target);
-- `set_field`: sets or updates an allowed managed field (`Version`, `Skill`,
-  `Trusted default branch`, `Owner`, `Architect`, `Coder`);
-- `delete_field`: removes an explicitly identified managed field (e.g. `Pre-release`).
+  the target routing sentence; both `match` and `replace` must be single-line
+  declarations matching the ordinary routing sentence grammar (idempotent no-op
+  if already at target; missing, ambiguous, or unrecognized routing fails closed);
+- `set_field`: sets or updates an allowed schema-owned managed field (`Version`,
+  `Pre-release`); `value` must be a single-line scalar; project authority and
+  provenance fields (`Skill`, `Trusted default branch`, `Owner`, `Architect`,
+  `Coder`, `Immutable ref`) are protected and cannot be modified by migration data;
+- `delete_field`: removes an allowed schema-owned managed field (`Pre-release`).
 
 Safety boundaries:
+- multiline / embedded newline values fail closed to prevent grammar escape;
 - unsupported manifest schema version (`version > 1`) fails closed;
 - unrecognized operation types fail closed;
-- multiple or ambiguous routing declarations fail closed;
+- project authority and provenance fields (`Skill`, `Owner`, `Architect`, `Coder`,
+  `Trusted default branch`, `Immutable ref`) cannot be mutated or deleted by migration data;
+- missing, multiple, or ambiguous routing declarations fail closed;
 - unrecognized routing sentences fail closed;
 - bytes outside `<!-- handoff-go:start/end -->` are never touched and must remain byte-for-byte identical.
 

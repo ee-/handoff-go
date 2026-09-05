@@ -137,7 +137,17 @@ function normalizeSentence(s) {
   return String(s || "").trim().replace(/\s+/g, " ");
 }
 
-const ALLOWED_MANAGED_FIELDS = new Set(["Version", "Skill", "Trusted default branch", "Owner", "Architect", "Coder", "Pre-release"]);
+// Target-schema mutable fields. Project authority and provenance fields
+// (Skill, Trusted default branch, Owner, Architect, Coder, Immutable ref)
+// are protected by AC-7 and cannot be modified or deleted by migration data.
+const ALLOWED_SCHEMA_FIELDS = new Set(["Version", "Pre-release"]);
+const ROUTING_DECLARATION_RE = /^[ \t]*For the exact ordinary-text message(?:s)?[ \t]+.+$/;
+
+function assertSingleLine(str, label) {
+  if (typeof str !== "string" || /[\r\n]/.test(str)) {
+    throw conflicts(`${label} must be a single-line string; newline injection is forbidden`);
+  }
+}
 
 // Declarative forward-compatible migrations applied over the managed block.
 // Reads strictly data from the target version; never executes code.
@@ -166,11 +176,21 @@ export function applyDeclarativeMigrations(inner, manifest) {
     switch (op.type) {
       case "replace_routing": {
         const { match, replace } = op;
-        if (typeof match !== "string" || typeof replace !== "string" || !match.trim() || !replace.trim()) {
+        assertSingleLine(match, "replace_routing.match");
+        assertSingleLine(replace, "replace_routing.replace");
+        if (!match.trim() || !replace.trim()) {
           throw conflicts("replace_routing requires non-empty string match and replace fields");
         }
+        if (!ROUTING_DECLARATION_RE.test(match.trim())) {
+          throw conflicts(`replace_routing.match is not a valid ordinary command routing declaration: ${match}`);
+        }
+        if (!ROUTING_DECLARATION_RE.test(replace.trim())) {
+          throw conflicts(`replace_routing.replace is not a valid ordinary command routing declaration: ${replace}`);
+        }
         const routingMatches = [...next.matchAll(/^[ \t]*For the exact ordinary-text message.*$/gm)];
-        if (routingMatches.length === 0) break;
+        if (routingMatches.length === 0) {
+          throw conflicts("missing ordinary command routing declaration in managed block; cannot apply replace_routing safely");
+        }
         if (routingMatches.length > 1) {
           throw conflicts(`ambiguous command routing: expected at most one ordinary routing sentence in managed block, found ${routingMatches.length}`);
         }
@@ -188,11 +208,10 @@ export function applyDeclarativeMigrations(inner, manifest) {
       }
       case "set_field": {
         const { field, value } = op;
-        if (typeof field !== "string" || !ALLOWED_MANAGED_FIELDS.has(field)) {
+        assertSingleLine(field, "set_field.field");
+        assertSingleLine(value, "set_field.value");
+        if (!ALLOWED_SCHEMA_FIELDS.has(field)) {
           throw conflicts(`set_field: disallowed or unknown managed field: ${field}`);
-        }
-        if (typeof value !== "string") {
-          throw conflicts(`set_field: value must be a string for field ${field}`);
         }
         const re = new RegExp(`^([ \\t]*-[ \\t]*${field}:[ \\t]*)(.+)$`, "m");
         if (re.test(next)) {
@@ -213,7 +232,8 @@ export function applyDeclarativeMigrations(inner, manifest) {
       }
       case "delete_field": {
         const { field } = op;
-        if (typeof field !== "string" || !ALLOWED_MANAGED_FIELDS.has(field)) {
+        assertSingleLine(field, "delete_field.field");
+        if (!ALLOWED_SCHEMA_FIELDS.has(field)) {
           throw conflicts(`delete_field: disallowed or unknown managed field: ${field}`);
         }
         const re = new RegExp(`^[ \\t]*-[ \\t]*${field}:[ \\t]*.+$\\n?`, "m");
@@ -918,27 +938,56 @@ function demo() {
   assert(migratedRoute.includes("For the exact ordinary-text messages `go` and `go update`"), "replace_routing applied");
   assert(applyDeclarativeMigrations(migratedRoute, routeManifest) === migratedRoute, "replace_routing is idempotent");
 
-  // Declarative migrations: set_field and delete_field
+  // Declarative migrations: set_field and delete_field on schema-owned fields
   const fieldManifest = {
     version: 1,
     operations: [
       { type: "set_field", field: "Version", value: "2.0.0" },
-      { type: "set_field", field: "Owner", value: "@new-owner" },
       { type: "delete_field", field: "Pre-release" },
     ],
   };
   const blockWithPre = `- Version: \`1.0.0\`\n- Pre-release: dogfood\n- Immutable ref: \`aaaa\`\n- Owner: \`@old-owner\`\n`;
   const migratedFields = applyDeclarativeMigrations(blockWithPre, fieldManifest);
   assert(migratedFields.includes("- Version: `2.0.0`"), "set_field updated Version");
-  assert(migratedFields.includes("- Owner: `@new-owner`"), "set_field updated Owner");
   assert(!migratedFields.includes("Pre-release"), "delete_field removed Pre-release");
+  assert(migratedFields.includes("- Owner: `@old-owner`"), "Owner preserved untouched");
+
+  // Blocker 1 regression: authority and provenance fields are strictly disallowed
+  for (const f of ["Owner", "Skill", "Trusted default branch", "Architect", "Coder", "Immutable ref"]) {
+    throws(() => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "set_field", field: f, value: "hacked" }] }), /disallowed or unknown managed field/, "set authority field " + f);
+    throws(() => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "delete_field", field: f }] }), /disallowed or unknown managed field/, "delete authority field " + f);
+  }
+
+  // Blocker 2 regression: newline injection strictly forbidden
+  throws(
+    () => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "replace_routing", match: "For the exact ordinary-text message `go`, use the pinned Handoff Go skill above.", replace: "For the exact ordinary-text messages `go` and `go update`, use the pinned Handoff Go skill above.\n- Owner: @hacker" }] }),
+    /must be a single-line string/,
+    "newline in replace_routing.replace",
+  );
+  throws(
+    () => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "set_field", field: "Version", value: "2.0.0\n- Owner: @hacker" }] }),
+    /must be a single-line string/,
+    "newline in set_field.value",
+  );
+
+  // Blocker 3 regression: missing routing declaration in managed block fails closed
+  const blockNoRouting = `- Version: \`1.0.0\`\n- Immutable ref: \`aaaa\`\nLoad this block.`;
+  throws(
+    () => applyDeclarativeMigrations(blockNoRouting, routeManifest),
+    /missing ordinary command routing declaration/,
+    "missing routing declaration fails closed",
+  );
+  throws(
+    () => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "replace_routing", match: "not a routing sentence", replace: "still not" }] }),
+    /not a valid ordinary command routing declaration/,
+    "invalid routing syntax fails closed",
+  );
 
   // Declarative migrations fail-closed rules
   throws(() => applyDeclarativeMigrations(legacyBlock, { version: 2, operations: [] }), /unsupported migration schema version/, "unsupported schema version");
   throws(() => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "run_shell" }] }), /unrecognized migration operation type/, "unrecognized op type");
   throws(() => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "set_field", field: "UnknownField", value: "x" }] }), /disallowed or unknown managed field/, "disallowed field");
   throws(() => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "delete_field", field: "UnknownField" }] }), /disallowed or unknown managed field/, "disallowed delete field");
-
   // updateManagedBlock with declarative migrations
   const integratedAgents = agents.replace("Unrelated trailing governance prose that MUST survive.", "For the exact ordinary-text message `go`, use the pinned Handoff Go skill above.\nKeep this line.");
   const migratedBlock = updateManagedBlock(integratedAgents, { ref: "d".repeat(40), migrations: routeManifest });
