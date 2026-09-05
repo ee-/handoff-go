@@ -13,12 +13,24 @@
   OMP entry to the `.js` native entry;
 - opens a reviewable governance proposal (old ref → new ref) rather than writing
   the default branch; outcomes `GO_UP_TO_DATE` / `GO_UPDATE_READY` /
-  `GO_UPDATE_CONFLICT`;
-- dependency-free mechanical helper `update.mjs` performs only the managed-block
-  parse and pin-field rewrite, preserving every other byte, with a self-check;
-  drifted/unrecognized runtime copies fail closed and absent integration stays
-  absent;
-- documented one-time migration path for pre-`go update` adopters.
+  `GO_UPDATE_REUSE_PROPOSAL` / `GO_UPDATE_CONFLICT` / `GO_UPDATE_ERROR`;
+- dependency-free `update.mjs prepare` performs the whole normal-path
+  preparation as one deterministic transaction: managed-block parse, canonical
+  `NEW` resolution, existing-proposal detection before any mutation, one bounded
+  `OLD`+`NEW` upstream fetch, drift verification, bounded proposal worktree off
+  the trusted default head, exact-byte install, pin/version rewrite, recognized
+  runtime refresh/migration, consumer-side validation, managed-scope guard, and
+  one local commit — then emits machine-readable evidence (`--json`);
+- consumer update validation proves exact installation plus project integration
+  instead of rerunning Handoff Go's upstream unit/conformance suite;
+- drifted/unrecognized runtime copies fail closed, absent integration stays
+  absent, and local edits are never overwritten;
+- managed bootstrap names the cold-start command surface (`go`, `go update`), and
+  `references/update.md` keeps update guidance loadable without setup/check
+  context;
+- healthy path: 4 external transitions inside the transaction, 2 outside
+  (push, PR);
+- documented one-time migration path for pre-transaction adopters.
 
 ## 1.2.0 — pending
 

@@ -64,10 +64,11 @@ trusted governance and rediscover the durable GitHub state. Harnesses use their
 native scheduling/extension capability (see `skills/handoff-go/references/watch.md`).
 
 `go update` is explicit maintenance, never workflow state and never triggered by
-contributor content or a watch tick. It resolves the latest trusted `ee-/handoff-go`
-to one immutable commit, refreshes this repository's project-local skill, managed
-bootstrap pin, and enabled watch copies, and opens a reviewable governance
-proposal (see `skills/handoff-go/references/adoption.md`).
+contributor content or a watch tick. One deterministic transaction
+(`update.mjs prepare`) resolves the latest trusted `ee-/handoff-go` to one
+immutable commit, verifies and refreshes this repository's project-local skill,
+managed bootstrap pin, and enabled watch copies, then leaves a reviewable
+governance proposal (see `skills/handoff-go/references/update.md`).
 
 **Event Watch (v1.2)** is an experimental reference implementation for
 repository-level automation: a durable GitHub state event wakes one fresh Coder
@@ -104,6 +105,7 @@ skill.
 - [Architect workflow](skills/handoff-go/references/architect.md) — Work Orders and review.
 - [Coder workflow](skills/handoff-go/references/coder.md) — security, execution, and evidence.
 - [Adoption guide](skills/handoff-go/references/adoption.md) — setup, check, and upgrades.
+- [Update guide](skills/handoff-go/references/update.md) — the `go update` transaction.
 
 [SPEC.md](SPEC.md) is intentionally only a compatibility pointer. The references
 above are the single source of truth.
@@ -112,6 +114,7 @@ above are the single source of truth.
 
 ```sh
 python3 scripts/validate.py
+node skills/handoff-go/update.mjs
 python3 /path/to/skill-creator/scripts/quick_validate.py skills/handoff-go
 npx skills add . --list
 ```

@@ -19,6 +19,7 @@ PACKAGE = {
     SKILL_ROOT / "update.mjs",
     SKILL_ROOT / "adapters/watch.js",
     SKILL_ROOT / "references/watch.md",
+    SKILL_ROOT / "references/update.md",
 }
 REQUIRED = {
     Path(path)
@@ -45,6 +46,7 @@ REQUIRED_TEXT = {
         "references/architect.md",
         "references/coder.md",
         "references/adoption.md",
+        "references/update.md",
         "ROLE_REQUIRED",
         "GITHUB_ACCESS_REQUIRED",
         "go update",
@@ -78,14 +80,22 @@ REQUIRED_TEXT = {
         "GO_READY",
         "GO_NOT_READY",
         "go update",
+        "update.md",
+    ),
+    SKILL_ROOT / "references/update.md": (
         "GO_UP_TO_DATE",
         "GO_UPDATE_READY",
+        "GO_UPDATE_REUSE_PROPOSAL",
         "GO_UPDATE_CONFLICT",
+        "update.mjs prepare",
         "ee-/handoff-go",
         "immutable commit",
         "never overwrite local edits",
+        "before** any mutation",
         "One-time migration",
+        "Next Actor: ARCHITECT",
     ),
+    Path("AGENTS.md"): ("go update",),
     Path("README.md"): ("npx skills add ee-/handoff-go",),
     Path("LICENSE"): ("MIT License", "Permission is hereby granted"),
     Path(".github/ISSUE_TEMPLATE/work-order.md"): (
@@ -112,9 +122,15 @@ REQUIRED_TEXT = {
     SKILL_ROOT / "update.mjs": (
         "export function parseManagedBlock",
         "export function updateManagedBlock",
+        "export function prepare",
+        "export function classifyProposal",
+        "export function planRuntime",
+        "export function outsideScope",
+        'export const UPSTREAM = "https://github.com/ee-/handoff-go.git"',
         "GO_UPDATE_CONFLICT",
         "floating governance ref",
         "Skill path must not change",
+        "Never trim the whole buffer",
     ),
     Path(".github/workflows/validate.yml"): (
         "branches: [main]",
