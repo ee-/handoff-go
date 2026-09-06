@@ -7,15 +7,14 @@ Nothing released yet: no tag, no GitHub Release. Everything below is pending.
 Repository identity across GitHub SSH host aliases (issue #35):
 
 - `go update` accepts a legitimate multi-account `git@<alias>:owner/repo.git`
-  origin only when the transport's own endpoint proves GitHub: `ssh -G`
-  (local OpenSSH config expansion; no network or authentication) must resolve
-  the alias to `github.com`/`ssh.github.com`, or git's transport re-resolve
-  (`ls-remote --get-url`, honoring `insteadOf`) must land on
-  `https://github.com`;
+  origin only when git uses its default OpenSSH transport (no `GIT_SSH`,
+  `GIT_SSH_COMMAND`, `core.sshCommand`, or `ssh.variant`) and `ssh -G`
+  (local OpenSSH config expansion; no network or authentication) resolves
+  the alias's own hostname to `github.com`/`ssh.github.com`;
 - an alias string never becomes GitHub by itself — arbitrary hosts, unconfigured
-  aliases, non-`git` users, and non-SSH forms keep failing closed before any
-  GitHub discovery or mutation, now with `GH_REPO=owner/name` named as the
-  concrete remediation;
+  aliases, non-`git` users, non-SSH forms, and alternate SSH transports keep
+  failing closed before any GitHub discovery or mutation, now with
+  `GH_REPO=owner/name` named as the concrete remediation;
 - standard HTTPS/SSH origins and the explicit `GH_REPO` override resolve
   exactly as before and consume no new effects; identity gate, trusted
   discovery, and proposal authority unchanged; no new dependency.

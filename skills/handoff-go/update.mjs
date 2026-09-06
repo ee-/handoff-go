@@ -535,15 +535,18 @@ function sshEndpoint(url) {
   // also rejects Windows drive-letter paths (`C:/x/y`) that otherwise
   // resemble the scp-like form.
   let m = /^ssh:\/\/git@([A-Za-z0-9._-]+)(?::\d+)?\/([^/\s]+)\/([^/\s]+?)(?:\.git)?$/.exec(url);
-  if (m) return { host: m[1], owner: m[2], name: m[3] };
+  if (m) return slugEndpoint(m[1], m[2], m[3]);
   m = /^git@([A-Za-z0-9._-]+):([^/\s:]+)\/([^/\s:]+?)(?:\.git)?$/.exec(url);
-  if (m) return { host: m[1], owner: m[2], name: m[3] };
+  if (m) return slugEndpoint(m[1], m[2], m[3]);
   return null;
 }
 
-// Resolve where the ssh host actually terminates. `ssh -G` asks the same
-// OpenSSH client git uses for its transport to emit the effective local
-// configuration for a host: it performs no network or authentication, and an
+function slugEndpoint(host, owner, name) {
+  return SLUG_SHAPE.test(`${owner}/${name}`) ? { host, owner, name } : null;
+}
+
+// Resolve where the ssh host actually terminates. `ssh -G` emits effective
+// local OpenSSH configuration for a host: no network, no authentication. An
 // alias string alone is never authority — only a resolved github.com endpoint
 // is. A missing or non-OpenSSH client simply fails the check (fail closed).
 function ghSshHostResolved(io, host) {
@@ -555,6 +558,25 @@ function ghSshHostResolved(io, host) {
   }
   const m = /^hostname[ \t]+(\S+)[ \t]*$/im.exec(String(out));
   return m !== null && GH_SSH_HOSTS.has(m[1].toLowerCase());
+}
+
+// `ssh -G` proves only the stock OpenSSH transport. Git can be configured to
+// run a different command (GIT_SSH, GIT_SSH_COMMAND, core.sshCommand,
+// ssh.variant); when any is present the proof would not describe what git
+// actually executes, so the alias path fails closed instead of parsing or
+// emulating the alternate transport.
+function defaultSshTransport(repoDir, io) {
+  if (process.env.GIT_SSH || process.env.GIT_SSH_COMMAND) return false;
+  for (const key of ["core.sshCommand", "ssh.variant"]) {
+    let value = "";
+    try {
+      value = io.git(repoDir, "config", "--get", key);
+    } catch {
+      /* unset or unreadable: git reports exit 1 for an absent key */
+    }
+    if (value) return false;
+  }
+  return true;
 }
 
 export function repoSlug(repoDir, io = productionIO) {
@@ -571,22 +593,15 @@ export function repoSlug(repoDir, io = productionIO) {
   const m = url.match(/github\.com[:/]+([^/]+)\/(.+?)(?:\.git)?$/);
   if (m) return [m[1], m[2]];
   // A legitimate multi-account SSH `Host` alias for GitHub does not contain
-  // the literal github.com. Re-resolve the transport URL (git config's
-  // insteadOf rewrites applied, still purely local) and accept the alias's
-  // owner/name only when its own ssh endpoint resolves to github.com, or when
-  // the rewrite already lands on https://github.com.
-  let transport = url;
-  try {
-    transport = io.git(repoDir, "ls-remote", "--get-url", "origin") || url;
-  } catch {
-    /* keep the raw url; every later effect stays fail-closed */
+  // the literal github.com: accept the alias's owner/name only when git uses
+  // its default OpenSSH transport and that client resolves the alias itself
+  // to github.com. Any other shape fails closed before discovery or mutation.
+  const ssh = sshEndpoint(url);
+  if (ssh && defaultSshTransport(repoDir, io) && ghSshHostResolved(io, ssh.host)) {
+    return [ssh.owner, ssh.name];
   }
-  const https = transport.match(/^https:\/\/(?:[^@/\s]+@)?github\.com(?:(?::\d+))?\/([^/\s]+)\/([^/\s]+?)(?:\.git)?$/);
-  if (https && SLUG_SHAPE.test(`${https[1]}/${https[2]}`)) return [https[1], https[2]];
-  const ssh = sshEndpoint(transport);
-  if (ssh && ghSshHostResolved(io, ssh.host)) return [ssh.owner, ssh.name];
   throw errored(
-    `cannot derive a GitHub owner/name from origin ${url}; if this repository reaches GitHub through an SSH host alias your ssh client cannot resolve to github.com, set GH_REPO=owner/name to declare the canonical GitHub identity`,
+    `cannot derive a GitHub owner/name from origin ${url}; this fails closed for non-GitHub hosts, unresolved SSH aliases, and alternate git SSH transports (GIT_SSH/GIT_SSH_COMMAND/core.sshCommand); set GH_REPO=owner/name to declare the canonical GitHub identity`,
   );
 }
 

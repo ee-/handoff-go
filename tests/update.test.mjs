@@ -108,9 +108,13 @@ export function createRecordingFakeIO(options = {}) {
       let res = "";
       if (cmd === "remote" && args[1] === "get-url") {
         res = options.originUrl || "https://github.com/ee-/handoff-go.git";
-      } else if (cmd === "ls-remote" && args[1] === "--get-url") {
-        if (options.transportError) throw options.transportError;
-        res = options.transportUrl !== undefined ? options.transportUrl : (options.originUrl || "https://github.com/ee-/handoff-go.git");
+      } else if (cmd === "config") {
+        // Real `git config --get` exits 1 for an unset key; mirror that.
+        const key = args[args.length - 1];
+        const val = key === "core.sshCommand" ? options.coreSshCommand
+          : key === "ssh.variant" ? options.sshVariant : undefined;
+        if (val) res = val;
+        else throw new Error("fatal: config key unset");
       } else if (cmd === "ls-remote") {
         if (options.lsRemoteError) throw options.lsRemoteError;
         res = (options.upstreamHead !== undefined ? options.upstreamHead : NEW_REF) + "\tHEAD";
@@ -965,7 +969,7 @@ function setupEnvironment() {
 
 {
   // AC-1: standard SSH origin resolves exactly as before — direct host match,
-  // no extra effects (transport re-resolve / ssh config never consulted).
+  // no identity effects beyond reading the remote.
   const env = setupEnvironment();
   try {
     const fake = createRecordingFakeIO({
@@ -977,13 +981,12 @@ function setupEnvironment() {
     const ev = prepare({ repoDir: env.repoDir, io: fake });
     assert.equal(ev.result, "PREPARED");
     assert.equal(ev.provenance.repository, "ee-/handoff-go", "canonical identity from standard SSH origin");
-    assert.equal(fake.trace.filter((t) => t[0] === "ssh").length, 0, "direct github.com SSH does not consult ssh config");
-    assert.equal(fake.trace.filter((t) => t[0] === "git" && t[2][1] === "--get-url").length, 0, "direct match does not re-resolve transport");
+    assert.equal(fake.calls.filter((t) => t.type === "ssh").length, 0, "direct github.com SSH does not consult ssh config");
+    assert.equal(fake.calls.filter((c) => c.type === "git" && c.args[0] === "config").length, 0, "direct match does not probe transports");
   } finally {
     env.cleanup();
   }
 }
-
 {
   // AC-2/AC-7: generic SSH `Host` alias — the alias string alone never passes;
   // identity resolves because the transport's own ssh endpoint resolves to
@@ -1041,23 +1044,44 @@ function setupEnvironment() {
 }
 
 {
-  // git@github.com-style insteadOf rewrites: the transport lands on
-  // https://github.com, so the rewrite itself carries canonical GitHub proof.
-  const env = setupEnvironment();
-  try {
+  // BLOCKER 2 guard: when git's SSH transport is not the default OpenSSH
+  // client, the bare `ssh -G` proof would describe a command git never runs.
+  // The alias path must fail closed — before consulting ssh at all — even
+  // when the alias would otherwise resolve to github.com.
+  for (const [label, extra] of [
+    ["core.sshCommand", { coreSshCommand: "plink -ssh -agent" }],
+    ["ssh.variant", { sshVariant: "plink" }],
+    ["GIT_SSH_COMMAND env", {}],
+    ["GIT_SSH env", {}],
+  ]) {
+    const env = setupEnvironment();
     const fake = createRecordingFakeIO({
-      originUrl: "mygh:acme/widgets.git",
-      transportUrl: "https://github.com/acme/widgets.git",
+      originUrl: "git@gh-work:acme/widgets.git",
+      sshResolvedHost: "github.com", // would succeed if consulted — it must not be
       oldSkillDir: env.oldSkillDir,
       newSkillDir: env.newSkillDir,
-      populateWorktree: env.populateWorktree,
+      ...extra,
     });
-    const ev = prepare({ repoDir: env.repoDir, io: fake });
-    assert.equal(ev.result, "PREPARED");
-    assert.equal(ev.provenance.repository, "acme/widgets");
-    assert.equal(fake.calls.some((c) => c.type === "ssh"), false, "https transport needs no ssh consultation");
-  } finally {
-    env.cleanup();
+    try {
+      if (label === "GIT_SSH_COMMAND env") process.env.GIT_SSH_COMMAND = "plink -ssh";
+      if (label === "GIT_SSH env") process.env.GIT_SSH = "/usr/bin/plink";
+      assert.throws(
+        () => prepare({ repoDir: env.repoDir, io: fake }),
+        (e) => {
+          assert.equal(e.code, "GO_UPDATE_ERROR", label);
+          assert.match(e.message, /cannot derive a GitHub owner\/name/, label);
+          assert.match(e.message, /GH_REPO=owner\/name/, label);
+          return true;
+        },
+        label,
+      );
+      assert.equal(fake.calls.some((c) => c.type === "ssh"), false, `${label}: ssh -G never consulted under an alternate transport`);
+      assert.equal(fake.calls.some((c) => c.type === "gh"), false, `${label}: no GitHub discovery`);
+    } finally {
+      delete process.env.GIT_SSH_COMMAND;
+      delete process.env.GIT_SSH;
+      env.cleanup();
+    }
   }
 }
 
