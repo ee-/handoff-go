@@ -40,6 +40,19 @@
   upgrade legacy single-command routing in `AGENTS.md` to explicitly include
   `go update` so fresh sessions discover maintenance directly from trusted
   governance without out-of-band knowledge;
+- trusted bootstrap is the repository command router: the invariant lives in the
+  managed block's single-line routing declaration — claimed repository-scoped
+  commands resolve from that block before any checkout-local,
+  harness-discovered, or globally installed skill; the named pinned
+  implementation is then executed without independent rediscovery or
+  reinterpretation; requests the block does not claim keep normal skill
+  discovery;
+- already-adopted repositories receive the router declaration through governed
+  data, not manual rewrites: `migrations.json` chains `replace_routing`
+  (legacy `go`-only -> two-command -> router declaration), each step tolerating a
+  block already advanced to a later declared target; a declaration an older
+  template wrapped across lines is first normalized to its canonical single
+  line, since migration data matches one physical line;
 - forward-compatible declarative migrations: governed updates apply bootstrap/schema
   transformations declared in `skills/handoff-go/migrations.json` of the target
   version strictly as data; the trusted updater interprets only bounded operations

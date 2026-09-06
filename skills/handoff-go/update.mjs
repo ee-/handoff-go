@@ -168,8 +168,20 @@ export function applyDeclarativeMigrations(inner, manifest) {
     throw conflicts("invalid migrations manifest: operations must be an array");
   }
 
+  // A manifest may chain routing steps (legacy -> current -> newest) in one
+  // pass, so a step that a later step supersedes must tolerate a block already
+  // carrying that later declaration. Only manifest-declared targets are
+  // recognized; any other sentence still fails closed.
+  const laterTargets = ops.map(() => new Set());
+  for (let i = ops.length - 1; i > 0; i--) {
+    const op = ops[i];
+    laterTargets[i - 1] = new Set(laterTargets[i]);
+    if (op && op.type === "replace_routing" && typeof op.replace === "string") {
+      laterTargets[i - 1].add(normalizeSentence(op.replace));
+    }
+  }
   let next = inner;
-  for (const op of ops) {
+  for (const [idx, op] of ops.entries()) {
     if (!op || typeof op !== "object") {
       throw conflicts("invalid migration operation: expected an object");
     }
@@ -199,7 +211,7 @@ export function applyDeclarativeMigrations(inner, manifest) {
         const normMatch = normalizeSentence(match);
         const normReplace = normalizeSentence(replace);
 
-        if (normCurrent === normReplace) break;
+        if (normCurrent === normReplace || laterTargets[idx].has(normCurrent)) break;
         if (normCurrent === normMatch) {
           next = next.replace(currentSentence, replace.trim());
           break;
@@ -247,8 +259,26 @@ export function applyDeclarativeMigrations(inner, manifest) {
   return next;
 }
 
-// Upgrade legacy single-command routing to explicitly include `go update` so
-// fresh sessions discover maintenance directly from trusted governance.
+// Canonical single-line routing declarations, newest first. `replace_routing`
+// migration data matches ONE physical line, so a declaration an older template
+// wrapped across lines is normalized to its canonical single line here. This
+// function owns shape only; command content upgrades live in migration data.
+const ROUTING_DECLARATIONS = [
+  "For the exact ordinary-text messages `go` and `go update`, use the pinned Handoff Go skill above (`go update` is maintenance only, never workflow state): this block claims those commands, so resolve them here before consulting any checkout-local, harness-discovered, or globally installed skill, then load exactly that pinned implementation and execute it without rediscovering or reinterpreting the command; requests this block does not claim keep normal skill discovery.",
+  "For the exact ordinary-text messages `go` and `go update`, use the pinned Handoff Go skill above (`go update` is maintenance only, never workflow state).",
+];
+const LEGACY_DECLARATION = "For the exact ordinary-text message `go`, use the pinned Handoff Go skill above.";
+
+// Whitespace-tolerant matcher for one declaration: a template may have wrapped
+// it, and an older block may omit `pinned`.
+function declarationRe(sentence) {
+  const flexible = sentence
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/\s+/g, "\\s+")
+    .replace("use\\s+the\\s+pinned\\s+Handoff", "use\\s+the\\s+(?:pinned\\s+)?Handoff");
+  return new RegExp(`^[ \\t]*${flexible}`, "m");
+}
+
 function upgradeCommandRouting(inner) {
   const routingMatches = [...inner.matchAll(/^[ \t]*For the exact ordinary-text message.*$/gm)];
   if (routingMatches.length === 0) return inner;
@@ -257,15 +287,17 @@ function upgradeCommandRouting(inner) {
       `ambiguous command routing: expected at most one ordinary routing sentence in managed block, found ${routingMatches.length}`,
     );
   }
-  const currentRe = /^[ \t]*For the exact ordinary-text messages `go` and `go update`,\s*use\s*(the\s*(?:pinned\s*)?Handoff Go skill above)/m;
-  if (currentRe.test(inner)) return inner;
-
-  const legacyRe = /^[ \t]*For the exact ordinary-text message `go`,\s*use\s*(the\s*(?:pinned\s*)?Handoff Go skill above)\./m;
-  if (legacyRe.test(inner)) {
-    return inner.replace(
-      legacyRe,
-      "For the exact ordinary-text messages `go` and `go update`, use $1 (`go update` is maintenance only, never workflow state).",
-    );
+  if (ROUTING_DECLARATIONS.includes(routingMatches[0][0].trim())) return inner;
+  for (const [known, canonical] of [
+    ...ROUTING_DECLARATIONS.map((d) => [d, d]),
+    [LEGACY_DECLARATION, ROUTING_DECLARATIONS[1]],
+  ]) {
+    const m = declarationRe(known).exec(inner);
+    if (!m) continue;
+    // Prose that shared the wrapped declaration's last line starts its own
+    // line: the declaration must end up as exactly one physical line.
+    const rest = inner.slice(m.index + m[0].length).replace(/^[ \t]+(?=\S)/, "\n");
+    return inner.slice(0, m.index) + canonical + rest;
   }
   throw conflicts(
     "unrecognized ordinary command routing sentence in managed block; cannot determine upgrade compatibility safely",
@@ -281,10 +313,11 @@ export function updateManagedBlock(text, { ref, version = null, migrations = nul
 
   let next = replacePinLine(inner, "Immutable ref", ref);
   if (version !== null) next = replacePinLine(next, "Version", version);
+  // Shape first: migration data matches a single-line routing declaration.
+  next = upgradeCommandRouting(next);
   if (migrations) {
     next = applyDeclarativeMigrations(next, migrations);
   }
-  next = upgradeCommandRouting(next);
   const out = `${pre}${START}${next}${END}${post}`;
   const after = parseManagedBlock(out);
   if (after.immutableRef !== ref) throw conflicts("Immutable ref rewrite did not apply");
@@ -923,6 +956,32 @@ function demo() {
   // Unrecognized routing sentence fails closed.
   const weirdRouting = agents.replace("Unrelated trailing governance prose", "For the exact ordinary-text message `custom`, use skill.");
   throws(() => updateManagedBlock(weirdRouting, { ref: "c".repeat(40) }), /unrecognized ordinary command routing/, "unrecognized routing sentence");
+
+  // Issue #23: real adopters must actually receive the router declaration.
+  // The shipped manifest migrates every deployed declaration shape — including
+  // the wrapped ones the v1.0.0 template produced — idempotently.
+  const shipped = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "migrations.json"), "utf8"));
+  const shapes = {
+    "legacy one-line": LEGACY_DECLARATION,
+    "legacy wrapped": "For the exact ordinary-text message `go`, use the pinned\nHandoff Go skill above.",
+    "current one-line": ROUTING_DECLARATIONS[1],
+    "current wrapped": "For the exact ordinary-text messages `go` and `go update`, use the pinned\nHandoff Go skill above (`go update` is maintenance only, never workflow state).",
+    "current wrapped without `pinned`": "For the exact ordinary-text messages `go` and `go update`, use the Handoff Go\nskill above (`go update` is maintenance only, never\nworkflow state).",
+    "router already applied": ROUTING_DECLARATIONS[0],
+  };
+  for (const [shape, declaration] of Object.entries(shapes)) {
+    // Every deployed block continues prose on the declaration's last line.
+    const block = agents.replace(
+      "Unrelated trailing governance prose that MUST survive.",
+      `${declaration} Same-line prose MUST survive.\nLoad this block from main.`,
+    );
+    const out = updateManagedBlock(block, { ref: "e".repeat(40), migrations: shipped });
+    assert(out.includes("Same-line prose MUST survive."), `same-line prose preserved: ${shape}`);
+    assert(out.includes(ROUTING_DECLARATIONS[0]), `router declaration migrated: ${shape}`);
+    assert(out.includes("Load this block from main."), `surrounding prose preserved: ${shape}`);
+    assert([...out.matchAll(/For the exact ordinary-text message/g)].length === 1, `exactly one declaration: ${shape}`);
+    assert(updateManagedBlock(out, { ref: "e".repeat(40), migrations: shipped }) === out, `migration idempotent: ${shape}`);
+  }
 
 
   // Declarative migrations: replace_routing

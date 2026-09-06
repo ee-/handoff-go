@@ -5,6 +5,11 @@
       "type": "replace_routing",
       "match": "For the exact ordinary-text message `go`, use the pinned Handoff Go skill above.",
       "replace": "For the exact ordinary-text messages `go` and `go update`, use the pinned Handoff Go skill above (`go update` is maintenance only, never workflow state)."
+    },
+    {
+      "type": "replace_routing",
+      "match": "For the exact ordinary-text messages `go` and `go update`, use the pinned Handoff Go skill above (`go update` is maintenance only, never workflow state).",
+      "replace": "For the exact ordinary-text messages `go` and `go update`, use the pinned Handoff Go skill above (`go update` is maintenance only, never workflow state): this block claims those commands, so resolve them here before consulting any checkout-local, harness-discovered, or globally installed skill, then load exactly that pinned implementation and execute it without rediscovering or reinterpreting the command; requests this block does not claim keep normal skill discovery."
     }
   ]
 }
