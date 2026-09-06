@@ -93,6 +93,16 @@ The trusted source is fixed to `ee-/handoff-go`; project or contributor content
 can never redirect it. Installed bytes and the pin always come from the same
 resolved commit, and no floating pin may remain.
 
+**Repository identity** is established before that discovery: explicit
+`GH_REPO=owner/name`, then a standard GitHub HTTPS/SSH origin, then a
+legitimate SSH `Host` alias — accepted only when `ssh -G` (pure local OpenSSH
+config expansion: no network, no authentication) resolves the alias's
+`hostname` to GitHub, or when git's transport re-resolve lands on
+`https://github.com`. An alias string never proves GitHub by itself, working
+tree content never supplies identity, and an unresolvable or conflicting
+identity fails closed with `GH_REPO=owner/name` named as the concrete
+remediation.
+
 Script = mechanism, not policy. The updater decides only mechanical facts. It
 never decides acceptance, Architect/Owner approval, Work Order selection,
 routing, Security Gate authorization, or default-branch promotion.
