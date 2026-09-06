@@ -31,9 +31,10 @@ Only the native extension owns a watch timer, and it intercepts `go watch`
 before the model ever sees the text. Therefore the delivery channel itself is
 the evidence:
 
-- The command reached the model as ordinary text → the extension did not
-  intercept → states 2/3 are false, regardless of what is on disk. The Coder
-  must emit the canonical outcome verbatim and stop:
+- A **watch command reached the model as ordinary text** → the extension did
+  not intercept → states 2/3 are false, regardless of what is on disk. Emit
+  the canonical outcome for the exact command form, then stop:
+  - model-visible `go watch` / `go watch <interval>` →
 
   ```text
   WATCH_RESTART_REQUIRED
@@ -45,9 +46,17 @@ the evidence:
   re-discovery are forbidden emulations of native state. `active` may only be
   claimed from observed native activation (interception, timer creation, and
   the immediate discovery it triggers).
-- `go watch stop` on a watcher that was never started in this session reports
-  the canonical `WATCH_NOT_ACTIVE`; the model must not invent an active
-  watcher to stop.
+  - model-visible `go watch stop` →
+
+  ```text
+  WATCH_NOT_ACTIVE
+  ```
+
+  No watcher was started in this session, so there is nothing to stop and
+  nothing to enable: do not ask the user to install, copy, or restart
+  anything in order to stop a watcher that does not exist, and never invent
+  an active watcher to stop. The same `WATCH_NOT_ACTIVE` outcome applies when
+  the loaded adapter receives a stop before any start in this session.
 
 The canonical outcome texts live in `watch.mjs`
 (`WATCH_RESTART_REQUIRED` / `WATCH_NOT_ACTIVE`).

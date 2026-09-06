@@ -46,13 +46,17 @@ bypass authority, security, or repository permissions.
 - **go watch** — Coder only. Read [core.md](references/core.md),
   [coder.md](references/coder.md), and the watch rules in
   [watch.md](references/watch.md). A real watch timer is owned exclusively by
-  the loaded native harness extension, which intercepts this command before you
-  ever see it. If this text reaches you, the extension did not intercept: you
-  are NOT in an active watcher. Emit the canonical `WATCH_RESTART_REQUIRED`
-  outcome from `watch.md`, perform no discovery, schedule nothing, run no
-  manual or background loop, and stop. Never claim `go watch active` without
-  observed native activation. See `watch.md` for the lifecycle and
-  per-harness capability.
+  the loaded native harness extension, which intercepts these commands before
+  you ever see them. If a watch command reaches you as text, the extension
+  did not intercept and no watcher exists in this session. Then, by the exact
+  command form: `go watch` / `go watch <interval>` → emit the canonical
+  `WATCH_RESTART_REQUIRED` outcome; `go watch stop` → emit the canonical
+  `WATCH_NOT_ACTIVE` outcome (nothing was started here; never ask the user to
+  enable or restart anything just to stop a watcher that does not exist).
+  Either way: perform no discovery, schedule nothing, run no manual or
+  background loop, and stop. Never claim `go watch active` without observed
+  native activation. See `watch.md` for the lifecycle and per-harness
+  capability.
 - **go update** — Maintenance only. Run the deterministic bootstrap command to
   materialize and execute the trusted pinned updater without loading checkout JS:
   `HG_TMP=""; REPO="$PWD"; STORE="${XDG_CACHE_HOME:-$HOME/.cache}/handoff-go/objects.git"; [ -d "$STORE" ] || git init --bare -q "$STORE"; git fetch -q origin HEAD && REF=$(git show FETCH_HEAD:AGENTS.md | node -e 'const b=fs.readFileSync(0,"utf8"),S="<!-- handoff-go:start -->",E="<!-- handoff-go:end -->";if(b.split(S).length!==2||b.split(E).length!==2)process.exit(1);const s=b.indexOf(S),e=b.indexOf(E);if(s===-1||e===-1||s>=e)process.exit(1);const ms=[...b.slice(s+S.length,e).matchAll(/^[ \t]*-[ \t]*Immutable ref:[ \t]*(.+)$/gm)];if(ms.length!==1)process.exit(1);const v=ms[0][1],c=v.match(/`([^`]+)`/),r=(c?c[1]:v).trim().replace(/^["\x27]+|["\x27]+$/g,"").trim();if(!/^(?:[0-9a-f]{40}|[A-Za-z0-9][A-Za-z0-9._\/-]*)$/.test(r)||/^(main|master|develop|trunk|HEAD)$/i.test(r))process.exit(1);process.stdout.write(r);') && [ -n "$REF" ] && (git --git-dir="$STORE" cat-file -e "$REF^{commit}" 2>/dev/null || git --git-dir="$STORE" fetch --depth=1 -q https://github.com/ee-/handoff-go.git "$REF") && HG_TMP=$(mktemp -d) && git --git-dir="$STORE" archive "$REF" skills/handoff-go/update.mjs | tar -x -C "$HG_TMP" && (cd "$HG_TMP/skills/handoff-go" && node update.mjs prepare --repo-dir "$REPO"); STATUS=$?; [ -n "$HG_TMP" ] && rm -rf "$HG_TMP"; exit $STATUS`
