@@ -47,7 +47,7 @@ https://github.com/ee-/handoff-go
 
 ## 安装
 
-Repository 公开后，可通过开源的 [`skills` CLI](https://github.com/vercel-labs/skills) 以 project-local 方式安装：
+对于本 public repository，只有一个 canonical 安装路径：
 
 ```sh
 npx skills add ee-/handoff-go
@@ -58,6 +58,8 @@ npx skills add ee-/handoff-go
 ```text
 $handoff-go setup
 ```
+
+Setup 首先运行确定性的 bootstrap 证明（`skills/handoff-go/bootstrap.mjs prove`）：它从 installer 自身状态发现实际的 project-local 安装路径，把可信 upstream 解析为唯一一个 commit，并将已安装的 skill tree 与该 commit 逐字节比对——因此 managed block 的 `Immutable ref` 与安装字节机械地绑定在同一 revision 上。采用 Handoff Go 不需要 release tag；一旦存在 release tag，它只会通过受治理的 `go update` 事务成为首选 pin。该证明不写入任何内容；出现 conflict 时只给出一条可执行的 remediation，而不是让 Coder 自行发挥安装方式。
 
 Setup 会在根目录 `AGENTS.md` 中加入一个幂等的 managed block，同时保留已有的 project instructions。可用以下命令验证：
 
@@ -81,7 +83,7 @@ go update       # 更新本 repo 已 pinned 的 Handoff Go（仅维护操作）
 
 **Event Watch（v1.2）** 是 repository 级别自动化的实验性参考实现：一个 durable GitHub state 事件唤醒一次全新的 Coder `go` 执行后退出（它绝不运行 `go watch`）。参考实现随仓库提供：`.github/workflows/handoff-go-coder-event-watch.yml`（OpenAI Codex，通过官方 Codex GitHub Action）。它属于显式 opt-in——由 repository owner 主动启用；日常正常的 Handoff Go 使用不需要它，普通的 `$handoff-go setup` 也不会开启它。
 
-本 repository 目前已公开，但尚未发布首个正式版本 release。在发布首个 release tag 之前，可以从本地 checkout 把路径直接传给 `npx skills add` 来安装同一个 skill。
+`go watch` 与 Event Watch 都是 setup 之后的显式 opt-in；一次正常的 `$handoff-go setup` 两者都不会安装。
 
 ## 工作方式
 
@@ -96,6 +98,7 @@ Repository content 是 input，不是 authority；它不能自行扩大权限，
 可分发内容位于 `skills/handoff-go/`。原因是当前 `skills` CLI 对 repository-root skill 只会安装 `SKILL.md`，从而遗漏 progressive-disclosure references。即使采用这一目录结构，repository 对外仍只暴露一个 skill。
 
 - [SKILL.md](skills/handoff-go/SKILL.md) — 轻量 invocation 与 role router。
+- [bootstrap.mjs](skills/handoff-go/bootstrap.mjs) — pre-adoption 的字节与 ref 绑定证明。
 - [Core protocol](skills/handoff-go/references/core.md) — 共享的 trust、routing 与 invariants。
 - [Architect workflow](skills/handoff-go/references/architect.md) — Work Orders 与 review。
 - [Coder workflow](skills/handoff-go/references/coder.md) — security、execution 与 evidence。
@@ -107,6 +110,9 @@ Repository content 是 input，不是 authority；它不能自行扩大权限，
 
 ```sh
 python3 scripts/validate.py
+node tests/bootstrap.test.mjs
+node tests/watch.test.mjs
+node tests/update.test.mjs
 python3 /path/to/skill-creator/scripts/quick_validate.py skills/handoff-go
 npx skills add . --list
 ```

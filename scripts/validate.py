@@ -23,6 +23,7 @@ PACKAGE = {
     SKILL_ROOT / "references/core.md",
     SKILL_ROOT / "watch.mjs",
     SKILL_ROOT / "update.mjs",
+    SKILL_ROOT / "bootstrap.mjs",
     SKILL_ROOT / "adapters/watch.js",
     SKILL_ROOT / "references/watch.md",
     SKILL_ROOT / "references/update.md",
@@ -164,6 +165,11 @@ def main() -> None:
           "Event Watch must hand the bounded result from reason to persist via pinned artifacts")
     check("DEFAULT_BRANCH" in persist,
           "Event Watch persist job must prohibit mutating default branch")
+    # --- AC-4: reusable bootstrap/updater logic never carries a current SHA ---
+    for path in sorted(p for p in PACKAGE if p.suffix in (".mjs", ".js")):
+        code = read(path)
+        check(re.search(r"\b[0-9a-f]{40}\b", code) is None,
+              f"{path} hard-codes a 40-hex commit SHA; derive the ref from proven state")
 
     # --- every third-party action stays pinned to a full commit SHA ---
     for wf in (ROOT / ".github/workflows").glob("*.yml"):
