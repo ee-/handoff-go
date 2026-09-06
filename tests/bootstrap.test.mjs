@@ -85,6 +85,12 @@ function expectConflict(fn, pattern) {
   });
 }
 
+// --- AC-4: a non-current semantic version passes through prove unchanged ---
+{
+  const { repoDir, io } = fakeWorld({ installed: SKILL_BYTES, version: "9.8.7" });
+  assert.equal(prove({ repoDir, io }).version, "9.8.7");
+}
+
 // --- AC-7: the skill path is derived from installer state, never guessed ---
 {
   const { repoDir, io } = fakeWorld({ installed: SKILL_BYTES });

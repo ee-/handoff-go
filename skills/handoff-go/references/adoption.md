@@ -56,7 +56,7 @@ Managed block:
 <!-- handoff-go:start -->
 ## Handoff Go
 
-- Version: 1.0.0
+- Version: `<PROVEN_VERSION>`
 - Immutable ref: `<PINNED_TAG_OR_COMMIT>`
 - Skill: `<PROJECT_RELATIVE_PATH_TO_SKILL.md>`
 - Trusted default branch: `<BRANCH>`
@@ -100,7 +100,10 @@ managed block. A partial or duplicate marker set fails closed with
 Perform a read-only validation:
 
 1. both managed markers occur exactly once and in order;
-2. version is `1.0.0` and ref is an immutable tag or commit;
+2. the block's `Version` equals the `VERSION` file of the block's pinned
+   `Immutable ref` (the same value `prove` reported for those installed bytes
+   at setup; read it again from that ref, never a remembered literal), and
+   that ref is an immutable tag or commit, not a floating branch;
 3. the skill path exists and its frontmatter name is `handoff-go`;
 4. the trusted default branch exists;
 5. Owner, Architect, and Coder mappings are concrete and non-conflicting;
