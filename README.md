@@ -113,7 +113,8 @@ tag or commit; copying any single file does not install the protocol.
 
 ```sh
 python3 scripts/validate.py
-node skills/handoff-go/update.mjs
+node tests/watch.test.mjs
+node tests/update.test.mjs
 python3 /path/to/skill-creator/scripts/quick_validate.py skills/handoff-go
 npx skills add . --list
 ```
