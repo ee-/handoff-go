@@ -17,6 +17,49 @@ For the Coder role, `go watch` performs one Coder `go` discovery immediately at
 activation, then waits the requested cadence and repeats. Below 60s is rejected
 and never silently adjusted.
 
+## Activation lifecycle (truthfulness boundary)
+
+Three states are distinct and must never be conflated:
+
+1. **on disk** — `.omp/watch.mjs` + `.omp/extensions/handoff-go-watch.js`
+   (or `.pi/` equivalents) exist;
+2. **loaded** — the running harness process discovered and initialized the
+   extension at session start and registered its native input hook;
+3. **active** — the native hook intercepted `go watch` and created the timer.
+
+Only the native extension owns a watch timer, and it intercepts `go watch`
+before the model ever sees the text. Therefore the delivery channel itself is
+the evidence:
+
+- The command reached the model as ordinary text → the extension did not
+  intercept → states 2/3 are false, regardless of what is on disk. The Coder
+  must emit the canonical outcome verbatim and stop:
+
+  ```text
+  WATCH_RESTART_REQUIRED
+  ```
+
+  with its remediation (enable the extension locally, restart the harness,
+  invoke `go watch` again in the fresh session). Running one manual Coder `go`
+  is not a watcher; shell loops, background polling, and scheduled
+  re-discovery are forbidden emulations of native state. `active` may only be
+  claimed from observed native activation (interception, timer creation, and
+  the immediate discovery it triggers).
+- `go watch stop` on a watcher that was never started in this session reports
+  the canonical `WATCH_NOT_ACTIVE`; the model must not invent an active
+  watcher to stop.
+
+The canonical outcome texts live in `watch.mjs`
+(`WATCH_RESTART_REQUIRED` / `WATCH_NOT_ACTIVE`).
+
+## Runtime control, not repository persistence
+
+`go watch` is session/runtime control only. It never grants — and nothing in
+this reference implies — authority to `git add`, commit, push, or open a PR for
+`.omp/`, `.pi/`, or any adapter copy. Whether harness integration files are
+committed to the repository is a separate, explicit repository change decided
+by the Owner/Architect, never a side effect of activating a watcher.
+
 ## Canonical watch tick
 
 Every wake runs a fresh, complete Coder `go` discovery — never an Issue-only
@@ -165,6 +208,13 @@ mkdir -p .pi/extensions
 cp <skill>/watch.mjs .pi/watch.mjs
 cp <skill>/adapters/watch.js .pi/extensions/handoff-go-watch.js
 ```
+These files are discovered only at harness startup. Copying them into a
+running session makes them **on disk** (lifecycle state 1), never **loaded**
+(state 2) or **active** (state 3): after copying, the user restarts the harness
+and runs `go watch` in the fresh session. The copy itself is a local workspace
+change; committing or pushing these files is a separate repository decision
+(see "Runtime control, not repository persistence").
+
 The shared core must be copied to the harness root (`.omp/watch.mjs` /
 `.pi/watch.mjs`) because the adapter imports `../watch.mjs` relative to its
 `.omp/extensions/`/`.pi/extensions/` location. Copying only the adapter file

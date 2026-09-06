@@ -23,6 +23,24 @@ If no actionable Coder work exists, return NO_CODER_WORK and settle.
 
 Do not invent work merely because watch mode woke you.`;
 
+// Canonical bounded outcomes for a model-visible `go watch`/`go watch stop`.
+// A native watch hook consumes (intercepts) these commands before the model
+// sees them; therefore text reaching the model is itself proof the extension
+// did NOT intercept and no watcher exists in this process. The only truthful
+// action is to emit the outcome and stop — never emulate a watcher, never
+// claim active, never schedule anything.
+export const WATCH_RESTART_REQUIRED = `WATCH_RESTART_REQUIRED
+The Handoff Go watch extension did not intercept this command, so no watcher
+exists in this session: nothing was scheduled and nothing is active. Do not
+run manual discoveries, background loops, or polling to emulate one.
+Remediation: enable the extension locally (watch.md "Enabling watch"), restart
+the harness session, then invoke \`go watch\` again in the fresh session.
+Copying the adapter files is a local workspace change only; watch never
+authorizes committing or pushing them.`;
+
+export const WATCH_NOT_ACTIVE = `WATCH_NOT_ACTIVE
+No watch timer was started in this session, so there is nothing to stop.
+A watcher from an earlier session died with that session.`;
 const UNIT_SECONDS = { s: 1, m: 60, h: 3600 };
 
 // Parse `go watch <interval>`. Accepts "", undefined, "60", "60s", "1m", "5m",

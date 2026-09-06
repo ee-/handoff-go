@@ -4,6 +4,25 @@
 
 Nothing released yet: no tag, no GitHub Release. Everything below is pending.
 
+Local Watch first-time activation (issue #33):
+
+- truthful activation lifecycle: on-disk adapter files, runtime-loaded
+  extension, and an active timer are three distinct states; `active` may only
+  be claimed from observed native interception + timer creation;
+- canonical bounded outcomes `WATCH_RESTART_REQUIRED` (model-visible
+  `go watch` = the extension never intercepted; emit, do not emulate, stop) and
+  `WATCH_NOT_ACTIVE` (stop with no watcher started in this session) live in
+  `watch.mjs`; the adapter reports not-active instead of inventing a watcher
+  to stop;
+- `SKILL.md` `go watch` route no longer instructs the model to run
+  discovery/repeat itself — a real watcher is owned exclusively by the loaded
+  native extension; manual discoveries, shell loops, and background polling
+  are explicitly forbidden emulations;
+- `watch.md` documents the lifecycle, the copy-then-restart boundary, and the
+  authority rule that `go watch` never authorizes committing or pushing
+  `.omp/`/`.pi` adapter copies;
+- no architecture, fingerprint, Event Watch, scheduler, or dependency changes.
+
 First-time adoption — deterministic and provenance-safe (issue #31):
 
 - one canonical public bootstrap path: `npx skills add ee-/handoff-go` followed
