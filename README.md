@@ -50,18 +50,27 @@ Read the trusted root AGENTS.md and load its pinned Handoff Go skill.
 
 ## Install
 
-After the repository is public, install it project-locally with the open
-[`skills` CLI](https://github.com/vercel-labs/skills):
+There is exactly one canonical install path for this public repository:
 
 ```sh
 npx skills add ee-/handoff-go
 ```
 
-Then invoke:
+then invoke:
 
 ```text
 $handoff-go setup
 ```
+
+Setup first runs the deterministic bootstrap proof
+(`skills/handoff-go/bootstrap.mjs prove`): it discovers the actual
+project-local install from the installer's own state, resolves the trusted
+upstream to exactly one commit, and byte-compares the installed skill tree
+against that commit — so the managed block's `Immutable ref` is mechanically
+tied to the installed bytes. No release tag is required to adopt Handoff Go.
+Once a release tag exists, it becomes the preferred pin only through the
+governed `go update` transaction. The proof never writes anything; a conflict
+stops with one actionable remediation instead of install-path improvisation.
 
 Setup adds one idempotent managed block to root `AGENTS.md` while preserving
 existing project instructions. Validate it with:
@@ -97,9 +106,8 @@ repository-level automation: a durable GitHub state event wakes one fresh Coder
 workflow (`.github/workflows/handoff-go-coder-event-watch.yml`) and is not
 required for normal Handoff Go use; normal `$handoff-go setup` does not enable it.
 
-This repository is public, but its first versioned release has not yet been
-published. Until the first release tag exists, install the skill from a local
-checkout by passing its path to `npx skills add`.
+`go watch` and Event Watch are explicit opt-ins after setup; a normal
+`$handoff-go setup` installs neither.
 
 ## How it works
 
@@ -122,6 +130,7 @@ progressive-disclosure references. The repository still exposes exactly one
 skill.
 
 - [SKILL.md](skills/handoff-go/SKILL.md) — small invocation and role router.
+- [bootstrap.mjs](skills/handoff-go/bootstrap.mjs) — pre-adoption byte-vs-ref proof.
 - [Core protocol](skills/handoff-go/references/core.md) — shared trust, routing, and invariants.
 - [Architect workflow](skills/handoff-go/references/architect.md) — Work Orders and review.
 - [Coder workflow](skills/handoff-go/references/coder.md) — security, execution, and evidence.
@@ -135,6 +144,7 @@ tag or commit; copying any single file does not install the protocol.
 
 ```sh
 python3 scripts/validate.py
+node tests/bootstrap.test.mjs
 node tests/watch.test.mjs
 node tests/update.test.mjs
 python3 /path/to/skill-creator/scripts/quick_validate.py skills/handoff-go

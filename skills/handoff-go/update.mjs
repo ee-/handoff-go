@@ -394,7 +394,7 @@ function treeFiles(dir) {
 }
 
 // Byte-exact tree comparison; returns the relative paths that differ.
-function diffTree(a, b) {
+export function diffTree(a, b) {
   const all = [...new Set([...treeFiles(a), ...treeFiles(b)])].sort();
   return all.filter((rel) => {
     const pa = join(a, rel);

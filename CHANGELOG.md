@@ -4,6 +4,24 @@
 
 Nothing released yet: no tag, no GitHub Release. Everything below is pending.
 
+First-time adoption — deterministic and provenance-safe (issue #31):
+
+- one canonical public bootstrap path: `npx skills add ee-/handoff-go` followed
+  by `$handoff-go setup`; all competing local-checkout / release-tag install
+  guidance removed from both READMEs and `references/adoption.md`;
+- dependency-free `bootstrap.mjs prove` establishes exact provenance before any
+  pinned logic runs: it discovers the project-local install from the installer's
+  own `skills ls --json` state, resolves the fixed trusted upstream to exactly
+  one commit, byte-compares the installed skill tree against that commit's
+  tree, and emits `GO_BOOTSTRAP_PROVEN` (immutable ref / skill path / version)
+  or one actionable conflict; it writes nothing and carries no workflow policy;
+- no release tag is needed to adopt; when a tag exists it becomes the preferred
+  pin only through the governed `go update` transaction;
+- setup remains harness-neutral: first-time adoption never installs `go watch`
+  copies, adapter files, or harness configuration;
+- validation gained an AC-4 guard: no skill executable may contain a literal
+  40-hex commit SHA; focused hermetic tests in `tests/bootstrap.test.mjs`.
+
 `go update` — project-local Handoff Go upgrade:
 
 - explicit, operator-invoked maintenance command (`go update` / `$handoff-go update`)

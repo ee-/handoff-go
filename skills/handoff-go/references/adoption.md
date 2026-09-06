@@ -8,34 +8,46 @@ explicitly requests more.
 
 - a Git repository with a trusted default branch;
 - project-local Handoff Go installation;
-- an immutable release tag or commit;
+- an exact immutable ref proven against the installed bytes (see Setup step 1);
 - GitHub read/write access for roles that persist transitions;
 - explicit Owner, Architect, and Coder mappings.
 
-The intended public install command is:
+There is exactly one canonical public install path:
 
 ```sh
 npx skills add ee-/handoff-go
 ```
 
-Until the repository is public, use a local checkout as the skill source.
+then `$handoff-go setup`. It requires no release tag: setup derives the pin
+from the installed bytes themselves (Setup step 1). A local checkout is never
+a substitute install path for a public repository; once a release tag exists,
+it becomes the preferred pinned ref only through the governed `go update`
+transaction, never by hand.
 
 ## Setup
 
-1. Locate the repository root, root `AGENTS.md` if present, and the actual
-   project-relative path to this installed `SKILL.md`.
+1. Run the deterministic pre-adoption proof from the installed skill. Take the
+   install directory from `npx skills ls --json` (the project-scope `path` for
+   `handoff-go`; never guess an agent directory), then run
+   `node <that-dir>/bootstrap.mjs prove --repo-dir <repository-root>`.
+   It reports `GO_BOOTSTRAP_PROVEN` with the exact `Immutable ref`, the actual
+   project-relative `Skill` path, and the `Version` — the installed tree is
+   byte-compared against the upstream commit whose bytes are being pinned, so
+   the pin and the bytes always describe the same revision. On any conflict it
+   stops with one actionable remediation; do not work around it by guessing.
 2. Resolve the trusted default branch from git/GitHub rather than assuming
    `main`.
-3. Resolve an immutable installed ref from the skills lockfile, release tag, or
-   commit. A floating branch is not a valid governance pin.
+3. The `Immutable ref` from step 1 is the governance pin. Never substitute a
+   floating branch, a remembered SHA, or a version number.
 4. Resolve role mappings. Suggested defaults are repository owner as Owner,
    ChatGPT Chat as Architect, and the current repository-capable coding harness
    as Coder. Ask only when these are ambiguous.
 5. Preserve all text outside the managed markers below. If a complete managed
    block exists, replace only that block. If only one marker exists or multiple
    blocks exist, stop with `HANDOFF_GO_BOOTSTRAP_CONFLICT`.
-6. Write the block, re-read the file, and confirm every field is concrete and
-   the surrounding instructions are byte-for-byte preserved.
+6. Write the block using the proven values, re-read the file, and confirm every
+   field is concrete and the surrounding instructions are byte-for-byte
+   preserved.
 7. Run the checks below. Finish with `GO_READY` only when every check passes.
 
 Managed block:
@@ -65,16 +77,23 @@ Write the routing declaration as one physical line: governed updates match and
 migrate it as a single-line declaration, and a wrapped copy is only repaired on
 the next governed update.
 
-## Watch
+## Watch (optional, post-setup)
 
-`go watch` (Coder only) ships with the skill — the shared core (`watch.mjs`)
-and the universal extension adapter in `adapters/watch.js`. Setup is
-harness-neutral and does not install a coding-agent binary, an adapter file, or
-harness configuration. For OMP/Pi, enabling watch is a one-time native load
-step: copy the shared core and the adapter into the harness root and extension
+First-time adoption never runs `go watch`, never copies adapter files, and
+never touches harness configuration. `go watch` (Coder only) ships with the
+skill — the shared core (`watch.mjs`) and the universal extension adapter in
+`adapters/watch.js`. Enabling it is a separate, explicit request: for OMP/Pi,
+copy the shared core and the adapter into the harness root and extension
 dir — `watch.mjs` to `.omp/watch.mjs` / `.pi/watch.mjs`, and `adapters/watch.js`
 to `.omp/extensions/handoff-go-watch.js` / `.pi/extensions/handoff-go-watch.js`
 (see [watch.md](watch.md)).
+
+## Retry
+
+The whole path is idempotent: re-running the install re-materializes identical
+bytes, `prove` reproduces identical evidence, and setup replaces only the
+managed block. A partial or duplicate marker set fails closed with
+`HANDOFF_GO_BOOTSTRAP_CONFLICT` and is fixed by repair, never by a second block.
 
 ## Check
 
