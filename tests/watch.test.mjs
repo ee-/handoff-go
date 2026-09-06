@@ -5,7 +5,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseInterval, parseWatchCommand, WATCH_DEFAULT_SECONDS, WATCH_TICK_PROMPT } from "../skills/handoff-go/watch.mjs";
+import { parseInterval, parseWatchCommand, WATCH_DEFAULT_SECONDS, WATCH_NOT_ACTIVE, WATCH_RESTART_REQUIRED, WATCH_TICK_PROMPT } from "../skills/handoff-go/watch.mjs";
 import watchAdapter, { getDurableStateFingerprint } from "../skills/handoff-go/adapters/watch.js";
 
 // Patch global timers once so raw fallback timer usage (e.g. Pi) is observable.
@@ -21,12 +21,13 @@ function makeEnv(shape = "managed") {
   const sent = [];
   const ctxIntervals = [];
   const ctxCleared = [];
+  const notes = [];
   const api = {
     on(event, h) { (handlers[event] ??= []).push(h); },
     sendMessage(msg, opts) { sent.push({ msg, opts }); return Promise.resolve(); },
   };
   const ctx = {
-    ui: { notify: () => {} },
+    ui: { notify: (msg) => notes.push(msg) },
     mode: "tui",
     cwd: "/tmp",
     isIdle: () => true,
@@ -36,7 +37,7 @@ function makeEnv(shape = "managed") {
     ctx.setInterval = (fn, ms) => { ctxIntervals.push({ fn, ms }); return 7000 + ctxIntervals.length; };
     ctx.clearTimer = (id) => { ctxCleared.push(id); };
   }
-  return { api, ctx, handlers, sent, ctxIntervals, ctxCleared, shape };
+  return { api, ctx, handlers, sent, ctxIntervals, ctxCleared, notes, shape };
 }
 
 function emit(env, name, event) {
@@ -182,6 +183,47 @@ for (const shape of ["managed", "fallback"]) {
   currentFp = "fp_new";
   tickFn();
   assert.equal(env.sent.length, 5, "stopped watcher does not wake on tick");
+}
+
+// ---- Activation lifecycle: disk vs loaded vs active (Issue #33 AC-1/2/5) ----
+{
+  // State 1, "on disk": files copied into a harness layout change nothing in
+  // any process. No adapter was instantiated, so no input hooks, timers, or
+  // wakes exist anywhere; the only truthful model-visible outcome for
+  // `go watch` is the canonical restart-required text, never an active claim.
+  assert.match(WATCH_RESTART_REQUIRED, /^WATCH_RESTART_REQUIRED\n/);
+  assert.match(WATCH_RESTART_REQUIRED, /nothing was scheduled and nothing is active/);
+  assert.match(WATCH_RESTART_REQUIRED, /restart/);
+  assert.doesNotMatch(WATCH_RESTART_REQUIRED, /watch (is )?active/);
+
+  // State 2, "loaded but never started": the extension is in the process, but
+  // stop must not invent an active watcher (AC-5): the canonical
+  // WATCH_NOT_ACTIVE outcome is reported instead of a false "stopped".
+  const never = makeEnv("managed");
+  watchAdapter(never.api, { probe: () => "fp1" });
+  emit(never, "session_start", {});
+  const stopBefore = await emit(never, "input", { text: "go watch stop", source: "interactive" });
+  assert.deepEqual(stopBefore, { handled: true, action: "handled" }, "stop is consumed");
+  assert.equal(never.notes.at(-1), WATCH_NOT_ACTIVE, "never-started stop reports WATCH_NOT_ACTIVE");
+  assert.equal(never.ctxIntervals.length, 0, "never-started stop creates no timer");
+  assert.equal(never.ctxCleared.length, 0, "never-started stop clears no timer");
+  assert.equal(never.sent.length, 0, "never-started stop wakes nothing");
+
+  // State 3, "active": only native interception + start() creates the timer
+  // and performs the immediate discovery. The stop after a real start reports
+  // the genuine stopped notification (not WATCH_NOT_ACTIVE).
+  const started = makeEnv("managed");
+  watchAdapter(started.api, { probe: () => "fp1" });
+  emit(started, "session_start", {});
+  await emit(started, "input", { text: "go watch", source: "interactive" });
+  assert.equal(started.ctxIntervals.length, 1, "activation creates exactly one timer");
+  assert.equal(started.sent.length, 1, "activation performs the immediate discovery");
+  emit(started, "input", { text: "go watch stop", source: "interactive" });
+  assert.ok(started.notes.includes("Handoff Go watch stopped"), "genuine stop reports stopped");
+  assert.ok(!started.notes.includes(WATCH_NOT_ACTIVE), "genuine stop is not reported as never-active");
+  // After stop the watcher is dead: a later stop reports WATCH_NOT_ACTIVE.
+  emit(started, "input", { text: "go watch stop", source: "interactive" });
+  assert.equal(started.notes.at(-1), WATCH_NOT_ACTIVE, "second stop after stopping reports not-active");
 }
 
 // Reachability: universal adapter `import "../watch.mjs"` from `.omp/extensions/`

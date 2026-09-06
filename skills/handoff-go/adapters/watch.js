@@ -20,7 +20,7 @@
 //   turn matches (`wakeFp === settledFp`). If state changes during a turn,
 //   the baseline does not advance, ensuring a follow-up settling tick runs.
 import { execFileSync } from "node:child_process";
-import { parseWatchCommand, WATCH_DEFAULT_SECONDS, WATCH_TICK_PROMPT } from "../watch.mjs";
+import { parseWatchCommand, WATCH_DEFAULT_SECONDS, WATCH_NOT_ACTIVE, WATCH_TICK_PROMPT } from "../watch.mjs";
 
 export function getDurableStateFingerprint(cwd) {
   try {
@@ -151,11 +151,14 @@ export default function handoffGoWatch(pi, options = {}) {
 
     const cmd = parseWatchCommand(event.text);
     if (cmd.kind === "stop") {
+      const wasActive = active;
       active = false;
       clearTimer();
       baselineFingerprint = null;
       wakeFingerprint = null;
-      ctx.ui?.notify?.("Handoff Go watch stopped", "info");
+      // AC-5: never invent an active watcher to stop. A stop before any start
+      // in this session reports the canonical not-active outcome instead.
+      ctx.ui?.notify?.(wasActive ? "Handoff Go watch stopped" : WATCH_NOT_ACTIVE, "info");
       return { handled: true, action: "handled" };
     }
     if (cmd.invalid) {
