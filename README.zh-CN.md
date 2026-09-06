@@ -23,6 +23,28 @@ go
 
 `go` 是 role-relative 的，只在 repository 的可信根 `AGENTS.md` 明确启用了某个 pinned Handoff Go 版本时生效。
 
+## 极简起步
+
+### 1. Coder 安装 / 设置
+
+输入到你的 coding agent（Codex、Claude Code、OpenCode、Pi 等）：
+
+```text
+在此 repository 中安装并设置 Handoff Go：
+https://github.com/ee-/handoff-go
+```
+
+### 2. ChatGPT Architect 接手
+
+输入到 ChatGPT Chat：
+
+```text
+作为此 repository 的 Handoff Go Architect：
+<repository-url>
+
+读取可信根目录 AGENTS.md 并加载其 pinned Handoff Go skill。
+```
+
 ## 安装
 
 Repository 公开后，可通过开源的 [`skills` CLI](https://github.com/vercel-labs/skills) 以 project-local 方式安装：
