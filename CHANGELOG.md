@@ -31,6 +31,11 @@
   discovery narration, implementation commentary, redundant evidence, and
   performance diagnostics do not appear by default; detailed diagnostics remain
   available via explicit `--verbose` and `--json` flags;
+- maintenance stop boundary: `go update` stops immediately after emitting its
+  terminal outcome (`GO_UP_TO_DATE`, `GO_UPDATE_READY`, conflict, error); does
+  not narrate previous merge/promotion history, does not delete or clean up old
+  branches, does not review/merge proposals, and does not instruct the user to
+  merge; `Next Actor: ARCHITECT` is the sole promotion routing;
 - managed bootstrap command-routing compatibility: protocol upgrades automatically
   upgrade legacy single-command routing in `AGENTS.md` to explicitly include
   `go update` so fresh sessions discover maintenance directly from trusted
