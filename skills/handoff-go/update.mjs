@@ -331,7 +331,7 @@ export function updateManagedBlock(text, { ref, version = null, migrations = nul
 // `git status --porcelain=v1 -z` emits "XY path\0"; a rename adds a bare source
 // entry. Never trim the whole buffer: the first entry's leading status space is
 // significant and trimming shifts every path by one byte.
-export function changedPaths(zText) {
+function changedPaths(zText) {
   return zText
     .split("\0")
     .filter(Boolean)
@@ -339,7 +339,7 @@ export function changedPaths(zText) {
 }
 
 // Any prepared change outside the managed surface fails the transaction.
-export function outsideScope(paths, skillDirRel) {
+function outsideScope(paths, skillDirRel) {
   const managed = (p) =>
     p === "AGENTS.md" ||
     p === skillDirRel ||
@@ -353,7 +353,7 @@ export function outsideScope(paths, skillDirRel) {
 // proposal: a fork PR may use any head branch name and never carries update
 // authority. One proposal for this exact NEW is reused; another ref, or a
 // same-repo proposal onto the wrong base, is a bounded conflict.
-export function classifyProposal(openPrs, branch, trustedBranch) {
+function classifyProposal(openPrs, branch, trustedBranch) {
   const named = (openPrs || []).filter((pr) => (pr.headRefName || "").startsWith(BRANCH_PREFIX));
   const sameRepo = named.filter((pr) => pr.isCrossRepository === false);
   const wrongBase = sameRepo.find((pr) => pr.baseRefName !== trustedBranch);
@@ -366,7 +366,7 @@ export function classifyProposal(openPrs, branch, trustedBranch) {
 
 // Only recognized copies that are actually enabled are touched; absent
 // integration stays absent.
-export function planRuntime(presentPaths) {
+function planRuntime(presentPaths) {
   const refresh = [];
   const migrate = [];
   const absent = [];
@@ -394,7 +394,7 @@ function treeFiles(dir) {
 }
 
 // Byte-exact tree comparison; returns the relative paths that differ.
-export function diffTree(a, b) {
+function diffTree(a, b) {
   const all = [...new Set([...treeFiles(a), ...treeFiles(b)])].sort();
   return all.filter((rel) => {
     const pa = join(a, rel);
@@ -410,13 +410,32 @@ function run(cmd, args, opts = {}) {
   return execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...opts });
 }
 
+export const productionIO = {
+  git(dir, ...args) {
+    const out = run("git", ["-C", dir, ...args]);
+    return args.includes("-z") ? out : out.trim();
+  },
+  gh(dir, args) {
+    return run("gh", args, { cwd: dir }).trim();
+  },
+  extractSkill(cache, sha, tmps) {
+    const dir = mkdtempSync(join(tmpdir(), "hg-tree-"));
+    tmps.push(dir);
+    const tarball = join(dir, "tree.tar");
+    run("git", ["-C", cache, "archive", "--format=tar", "-o", tarball, sha, UPSTREAM_SKILL]);
+    run("tar", ["-xf", tarball, "-C", dir]);
+    rmSync(tarball, { force: true });
+    return join(dir, UPSTREAM_SKILL);
+  },
+};
+
 function git(dir, ...args) {
-  return run("git", ["-C", dir, ...args]).trim();
+  return productionIO.git(dir, ...args);
 }
 
-function branchPresent(dir, branch) {
+function branchPresent(dir, branch, io = productionIO) {
   try {
-    git(dir, "rev-parse", "--verify", "-q", `refs/heads/${branch}`);
+    io.git(dir, "rev-parse", "--verify", "-q", `refs/heads/${branch}`);
     return true;
   } catch {
     return false;
@@ -500,12 +519,12 @@ const DISCOVERY = `query($owner:String!,$name:String!){repository(owner:$owner,n
   `pullRequests(states:OPEN,first:100){nodes{number url headRefName baseRefName isCrossRepository}pageInfo{hasNextPage}}}}`;
 
 // Repository identity comes from remote metadata, never from tracked content.
-function repoSlug(repoDir) {
+function repoSlug(repoDir, io = productionIO) {
   const env = (process.env.GH_REPO || "").trim();
   if (/^[^/\s]+\/[^/\s]+$/.test(env)) return env.split("/");
   let url;
   try {
-    url = git(repoDir, "remote", "get-url", "origin");
+    url = io.git(repoDir, "remote", "get-url", "origin");
   } catch {
     throw errored("no origin remote, so trusted repository provenance cannot be established");
   }
@@ -514,11 +533,11 @@ function repoSlug(repoDir) {
   return [m[1], m[2]];
 }
 
-function discover(repoDir) {
-  const [owner, name] = repoSlug(repoDir);
+function discover(repoDir, io = productionIO) {
+  const [owner, name] = repoSlug(repoDir, io);
   let raw;
   try {
-    raw = run("gh", ["api", "graphql", "-f", `query=${DISCOVERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`], { cwd: repoDir });
+    raw = io.gh(repoDir, ["api", "graphql", "-f", `query=${DISCOVERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`]);
   } catch (e) {
     throw errored(`gh api graphql failed (install and authenticate gh): ${firstLine(e)}`);
   }
@@ -531,12 +550,12 @@ function discover(repoDir) {
   if (typeof agentsText !== "string") {
     throw conflicts(`trusted default branch ${branch} has no readable AGENTS.md; the repository is not opted in`);
   }
-  if (repository.pullRequests.pageInfo.hasNextPage) {
+  if (repository.pullRequests?.pageInfo?.hasNextPage) {
     throw conflicts(
       "open pull request discovery is truncated, so an existing Handoff Go update proposal cannot be ruled out; supersede or close it manually",
     );
   }
-  return { owner, name, branch, head, agentsText, openPrs: repository.pullRequests.nodes };
+  return { owner, name, branch, head, agentsText, openPrs: repository.pullRequests?.nodes || [] };
 }
 
 // Every authority-bearing field is derived from the trusted default-branch
@@ -572,9 +591,9 @@ export function resolveTrusted({ agentsText, resolvedBranch, repoAbs }) {
 // Governance executable provenance = governance data provenance. The updater
 // that runs is the one the trusted managed bootstrap pins, never the bytes that
 // happen to sit in the current checkout.
-export function resolveTrustedUpdater({ repoDir = process.cwd() }, tmps) {
+export function resolveTrustedUpdater({ repoDir = process.cwd(), io = productionIO } = {}, tmps) {
   const repo = resolve(repoDir);
-  const found = discover(repo);
+  const found = discover(repo, io);
   const trusted = resolveTrusted({ agentsText: found.agentsText, resolvedBranch: found.branch, repoAbs: repo });
   const { skillDir, cached } = materializePinned(trusted.oldRef, tmps);
   const updater = join(skillDir, "update.mjs");
@@ -602,7 +621,9 @@ export function resolveTrustedUpdater({ repoDir = process.cwd() }, tmps) {
 // opens a PR, and never writes the default branch. Its success is the internal
 // status PREPARED, never the durable protocol state `GO_UPDATE_READY`: that one
 // may only be emitted once the proposal PR itself exists.
-export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
+export function prepare(opts = {}, injectedIO) {
+  const io = injectedIO || opts?.io || productionIO;
+  const { repoDir = process.cwd(), dryRun = false } = (typeof opts === "string" ? { repoDir: opts } : opts) || {};
   const repo = resolve(repoDir);
   const ev = {
     result: null,
@@ -622,7 +643,7 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
 
   // 1 — trusted provenance. The caller may sit on any feature branch; its
   // working tree never supplies the pin, Skill path, or trusted branch.
-  const found = discover(repo);
+  const found = discover(repo, io);
   ev.transitions.insideUpdater += 1;
   const trusted = resolveTrusted({ agentsText: found.agentsText, resolvedBranch: found.branch, repoAbs: repo });
   const { skillDirRel, trustedBranch } = trusted;
@@ -639,7 +660,7 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
   // 2 — resolve the canonical trusted upstream head to one immutable commit.
   let head;
   try {
-    head = run("git", ["ls-remote", UPSTREAM, "HEAD"], { cwd: repo });
+    head = io.git(repo, "ls-remote", UPSTREAM, "HEAD");
   } catch (e) {
     throw errored(`cannot reach trusted upstream ${UPSTREAM}: ${firstLine(e)}`);
   }
@@ -674,7 +695,7 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
   const cache = mkdtempSync(join(tmpdir(), "hg-cache-"));
   tmps.push(cache);
   // Never reset an existing local proposal branch: it may hold unpushed work.
-  if (branchPresent(repo, branch)) {
+  if (branchPresent(repo, branch, io)) {
     throw conflicts(
       `local branch ${branch} already exists and is not a recognized durable proposal; inspect and remove it before preparing an update`,
     );
@@ -684,25 +705,24 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
 
   try {
     // 3 — acquire OLD and NEW in one bounded fetch; all comparisons are local.
-    run("git", ["init", "--bare", "-q"], { cwd: cache });
+    io.git(cache, "init", "--bare", "-q");
     try {
-      run("git", ["-C", cache, "fetch", "--depth", "1", "-q", UPSTREAM, newRef, ev.oldRef]);
+      io.git(cache, "fetch", "--depth", "1", "-q", UPSTREAM, newRef, ev.oldRef);
     } catch (e) {
       throw conflicts(`cannot fetch pinned ${ev.oldRef.slice(0, 8)} and ${newRef.slice(0, 8)} from upstream: ${firstLine(e)}`);
     }
     ev.transitions.insideUpdater += 1;
-    const newSkill = extractSkill(cache, newRef, tmps);
-    const oldSkill = extractSkill(cache, ev.oldRef, tmps);
-    ev.version = git(cache, "cat-file", "blob", `${newRef}:VERSION`) || null;
-
+    const newSkill = io.extractSkill(cache, newRef, tmps);
+    const oldSkill = io.extractSkill(cache, ev.oldRef, tmps);
+    ev.version = io.git(cache, "cat-file", "blob", `${newRef}:VERSION`) || null;
     // 4 — bounded proposal worktree at the exact discovered trusted head.
     try {
-      git(repo, "fetch", "-q", "origin", trustedBranch);
+      io.git(repo, "fetch", "-q", "origin", trustedBranch);
     } catch (e) {
       throw errored(`cannot fetch trusted default branch origin/${trustedBranch}: ${firstLine(e)}`);
     }
     ev.transitions.insideUpdater += 1;
-    const fetched = git(repo, "rev-parse", "FETCH_HEAD");
+    const fetched = io.git(repo, "rev-parse", "FETCH_HEAD");
     if (fetched !== found.head) {
       throw conflicts(
         `trusted default branch ${trustedBranch} moved from ${found.head.slice(0, 8)} to ${fetched.slice(0, 8)} during preparation; re-run against the current trusted head`,
@@ -710,7 +730,7 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
     }
     worktree = mkdtempSync(join(tmpdir(), "hg-wt-"));
     tmps.push(worktree);
-    git(repo, "worktree", "add", "-q", "-b", branch, worktree, found.head);
+    io.git(repo, "worktree", "add", "-q", "-b", branch, worktree, found.head);
 
     // verify the trusted head's installed bytes and enabled copies against OLD
     const wtSkill = join(worktree, skillDirRel);
@@ -786,19 +806,19 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
     };
 
     // scope guard, then exactly one local commit on the proposal branch
-    git(worktree, "add", "-A");
-    ev.changedPaths = changedPaths(run("git", ["-C", worktree, "status", "--porcelain=v1", "-z"]));
+    io.git(worktree, "add", "-A");
+    ev.changedPaths = changedPaths(io.git(worktree, "status", "--porcelain=v1", "-z"));
     const foreign = outsideScope(ev.changedPaths, skillDirRel);
     if (foreign.length) throw conflicts(`prepared changes outside Handoff Go managed scope: ${foreign.join(", ")}`);
     if (!ev.changedPaths.length) throw errored("no changes prepared although the pinned ref differs from NEW");
 
     if (!dryRun) {
       try {
-        git(worktree, "commit", "-q", "-m", `chore(handoff-go): update ${ev.oldRef.slice(0, 8)} -> ${newRef.slice(0, 8)}`);
+        io.git(worktree, "commit", "-q", "-m", `chore(handoff-go): update ${ev.oldRef.slice(0, 8)} -> ${newRef.slice(0, 8)}`);
       } catch (e) {
         throw errored(`commit failed (configure git user.name/user.email): ${firstLine(e)}`);
       }
-      ev.commit = git(worktree, "rev-parse", "HEAD");
+      ev.commit = io.git(worktree, "rev-parse", "HEAD");
       keepBranch = true;
       ev.transitions.outsidePlanned = 2;
     } else {
@@ -811,14 +831,14 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
   } finally {
     if (worktree) {
       try {
-        git(repo, "worktree", "remove", "--force", worktree);
+        io.git(repo, "worktree", "remove", "--force", worktree);
       } catch {
         /* already gone */
       }
     }
     if (!keepBranch) {
       try {
-        git(repo, "branch", "-q", "-D", branch);
+        io.git(repo, "branch", "-q", "-D", branch);
       } catch {
         /* never created */
       }
@@ -827,7 +847,7 @@ export function prepare({ repoDir = process.cwd(), dryRun = false } = {}) {
   }
 }
 
-function report(ev, { verbose = false } = {}) {
+export function report(ev, { verbose = false } = {}) {
   const short = (r) => (r ? r.slice(0, 8) : "?");
   if (ev.result === "UP_TO_DATE") {
     if (verbose) {
@@ -891,278 +911,6 @@ function report(ev, { verbose = false } = {}) {
   console.log(preparedLines.join("\n"));
 }
 
-// One runnable check for the non-trivial block rewrite and update decisions.
-function demo() {
-  const assert = (c, m) => { if (!c) throw new Error("FAIL: " + m); };
-  const throws = (fn, re, m) => {
-    try { fn(); } catch (e) { if (re.test(e.message)) return; throw new Error(`FAIL(${m}): wrong error: ${e.message}`); }
-    throw new Error(`FAIL: ${m}: did not throw`);
-  };
-  const agents = [
-    "# Repo",
-    "",
-    START,
-    "## Handoff Go",
-    "",
-    "- Version: `1.0.0`",
-    "- Immutable ref: `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` (applied at release)",
-    "- Skill: `skills/handoff-go/SKILL.md`",
-    "- Trusted default branch: `main`",
-    "",
-    "Unrelated trailing governance prose that MUST survive.",
-    END,
-    "",
-    "Footer text outside the block that MUST survive.",
-  ].join("\n");
-
-  assert(parseManagedBlock(agents).skillPath === "skills/handoff-go/SKILL.md", "parses skill path");
-  assert(parseManagedBlock(agents).immutableRef.startsWith("aaaa"), "parses immutable ref");
-  assert(parseManagedBlock(agents).trustedBranch === "main", "parses trusted default branch");
-  assert(parseManagedBlock(agents).immutableRef === "a".repeat(40), "trailing prose never leaks into the pin");
-  const swapRef = (ref) => agents.replace(/- Immutable ref:.*/, `- Immutable ref: \`${ref}\``);
-  throws(() => parseManagedBlock(swapRef("+refs/heads/*:refs/heads/*")), /malformed Immutable ref/, "refspec-shaped pin");
-  throws(() => parseManagedBlock(swapRef("v1.0.0 --upload-pack=x")), /malformed Immutable ref/, "pin carrying arguments");
-
-  const updated = updateManagedBlock(agents, { ref: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", version: "1.9.9" });
-  assert(parseManagedBlock(updated).immutableRef === "b".repeat(40), "ref rewritten");
-  assert(parseManagedBlock(updated).version === "1.9.9", "version rewritten");
-  assert(updated.includes("Unrelated trailing governance prose that MUST survive."), "inner prose preserved");
-  assert(updated.includes("Footer text outside the block that MUST survive."), "outer prose preserved");
-  assert(updated.includes("# Repo"), "pre-block header preserved");
-  assert(parseManagedBlock(updated).skillPath === "skills/handoff-go/SKILL.md", "skill path untouched");
-  assert(updated.split("\n").length === agents.split("\n").length, "line count unchanged");
-
-  // Upgrading an older managed block with single `go` command routing expands it to include `go update`.
-  const legacyRoutingAgents = agents.replace(
-    "Unrelated trailing governance prose that MUST survive.",
-    "For the exact ordinary-text message `go`, use the pinned Handoff Go skill above.\nLoad this block from main.",
-  );
-  const upgradedRouting = updateManagedBlock(legacyRoutingAgents, { ref: "c".repeat(40) });
-  assert(
-    upgradedRouting.includes("For the exact ordinary-text messages `go` and `go update`, use the pinned Handoff Go skill above (`go update` is maintenance only, never workflow state)."),
-    "legacy command routing upgraded",
-  );
-  assert(upgradedRouting.includes("Load this block from main."), "surrounding prose preserved");
-
-  // If `go update` is mentioned in unrelated prose, the legacy routing sentence still upgrades.
-  const noteAgents = legacyRoutingAgents.replace("Load this block from main.", "Note: `go update` exists.\nLoad this block from main.");
-  const upgradedNote = updateManagedBlock(noteAgents, { ref: "c".repeat(40) });
-  assert(upgradedNote.includes("For the exact ordinary-text messages `go` and `go update`"), "upgrades even if go update appears in other prose");
-
-  // Multiple routing sentences fail closed.
-  const multiRouting = legacyRoutingAgents.replace("Load this block from main.", "For the exact ordinary-text message `go`, use foo.");
-  throws(() => updateManagedBlock(multiRouting, { ref: "c".repeat(40) }), /ambiguous command routing/, "multiple routing sentences");
-
-  // Unrecognized routing sentence fails closed.
-  const weirdRouting = agents.replace("Unrelated trailing governance prose", "For the exact ordinary-text message `custom`, use skill.");
-  throws(() => updateManagedBlock(weirdRouting, { ref: "c".repeat(40) }), /unrecognized ordinary command routing/, "unrecognized routing sentence");
-
-  // Issue #23: real adopters must actually receive the router declaration.
-  // The shipped manifest migrates every deployed declaration shape — including
-  // the wrapped ones the v1.0.0 template produced — idempotently.
-  const shipped = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "migrations.json"), "utf8"));
-  const shapes = {
-    "legacy one-line": LEGACY_DECLARATION,
-    "legacy wrapped": "For the exact ordinary-text message `go`, use the pinned\nHandoff Go skill above.",
-    "current one-line": ROUTING_DECLARATIONS[1],
-    "current wrapped": "For the exact ordinary-text messages `go` and `go update`, use the pinned\nHandoff Go skill above (`go update` is maintenance only, never workflow state).",
-    "current wrapped without `pinned`": "For the exact ordinary-text messages `go` and `go update`, use the Handoff Go\nskill above (`go update` is maintenance only, never\nworkflow state).",
-    "router already applied": ROUTING_DECLARATIONS[0],
-  };
-  for (const [shape, declaration] of Object.entries(shapes)) {
-    // Every deployed block continues prose on the declaration's last line.
-    const block = agents.replace(
-      "Unrelated trailing governance prose that MUST survive.",
-      `${declaration} Same-line prose MUST survive.\nLoad this block from main.`,
-    );
-    const out = updateManagedBlock(block, { ref: "e".repeat(40), migrations: shipped });
-    assert(out.includes("Same-line prose MUST survive."), `same-line prose preserved: ${shape}`);
-    assert(out.includes(ROUTING_DECLARATIONS[0]), `router declaration migrated: ${shape}`);
-    assert(out.includes("Load this block from main."), `surrounding prose preserved: ${shape}`);
-    assert([...out.matchAll(/For the exact ordinary-text message/g)].length === 1, `exactly one declaration: ${shape}`);
-    assert(updateManagedBlock(out, { ref: "e".repeat(40), migrations: shipped }) === out, `migration idempotent: ${shape}`);
-  }
-
-
-  // Declarative migrations: replace_routing
-  const legacyBlock = `- Version: 1.0.0\n- Immutable ref: \`aaaa\`\nFor the exact ordinary-text message \`go\`, use the pinned Handoff Go skill above.\nLoad this block.`;
-  const routeManifest = {
-    version: 1,
-    operations: [
-      {
-        type: "replace_routing",
-        match: "For the exact ordinary-text message `go`, use the pinned Handoff Go skill above.",
-        replace: "For the exact ordinary-text messages `go` and `go update`, use the pinned Handoff Go skill above (`go update` is maintenance only, never workflow state).",
-      },
-    ],
-  };
-  const migratedRoute = applyDeclarativeMigrations(legacyBlock, routeManifest);
-  assert(migratedRoute.includes("For the exact ordinary-text messages `go` and `go update`"), "replace_routing applied");
-  assert(applyDeclarativeMigrations(migratedRoute, routeManifest) === migratedRoute, "replace_routing is idempotent");
-
-  // Declarative migrations: set_field and delete_field on schema-owned fields
-  const fieldManifest = {
-    version: 1,
-    operations: [
-      { type: "set_field", field: "Version", value: "2.0.0" },
-      { type: "delete_field", field: "Pre-release" },
-    ],
-  };
-  const blockWithPre = `- Version: \`1.0.0\`\n- Pre-release: dogfood\n- Immutable ref: \`aaaa\`\n- Owner: \`@old-owner\`\n`;
-  const migratedFields = applyDeclarativeMigrations(blockWithPre, fieldManifest);
-  assert(migratedFields.includes("- Version: `2.0.0`"), "set_field updated Version");
-  assert(!migratedFields.includes("Pre-release"), "delete_field removed Pre-release");
-  assert(migratedFields.includes("- Owner: `@old-owner`"), "Owner preserved untouched");
-
-  // Blocker 1 regression: authority and provenance fields are strictly disallowed
-  for (const f of ["Owner", "Skill", "Trusted default branch", "Architect", "Coder", "Immutable ref"]) {
-    throws(() => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "set_field", field: f, value: "hacked" }] }), /disallowed or unknown managed field/, "set authority field " + f);
-    throws(() => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "delete_field", field: f }] }), /disallowed or unknown managed field/, "delete authority field " + f);
-  }
-
-  // Blocker 2 regression: newline injection strictly forbidden
-  throws(
-    () => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "replace_routing", match: "For the exact ordinary-text message `go`, use the pinned Handoff Go skill above.", replace: "For the exact ordinary-text messages `go` and `go update`, use the pinned Handoff Go skill above.\n- Owner: @hacker" }] }),
-    /must be a single-line string/,
-    "newline in replace_routing.replace",
-  );
-  throws(
-    () => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "set_field", field: "Version", value: "2.0.0\n- Owner: @hacker" }] }),
-    /must be a single-line string/,
-    "newline in set_field.value",
-  );
-
-  // Blocker 3 regression: missing routing declaration in managed block fails closed
-  const blockNoRouting = `- Version: \`1.0.0\`\n- Immutable ref: \`aaaa\`\nLoad this block.`;
-  throws(
-    () => applyDeclarativeMigrations(blockNoRouting, routeManifest),
-    /missing ordinary command routing declaration/,
-    "missing routing declaration fails closed",
-  );
-  throws(
-    () => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "replace_routing", match: "not a routing sentence", replace: "still not" }] }),
-    /not a valid ordinary command routing declaration/,
-    "invalid routing syntax fails closed",
-  );
-
-  // Declarative migrations fail-closed rules
-  throws(() => applyDeclarativeMigrations(legacyBlock, { version: 2, operations: [] }), /unsupported migration schema version/, "unsupported schema version");
-  throws(() => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "run_shell" }] }), /unrecognized migration operation type/, "unrecognized op type");
-  throws(() => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "set_field", field: "UnknownField", value: "x" }] }), /disallowed or unknown managed field/, "disallowed field");
-  throws(() => applyDeclarativeMigrations(legacyBlock, { version: 1, operations: [{ type: "delete_field", field: "UnknownField" }] }), /disallowed or unknown managed field/, "disallowed delete field");
-  // updateManagedBlock with declarative migrations
-  const integratedAgents = agents.replace("Unrelated trailing governance prose that MUST survive.", "For the exact ordinary-text message `go`, use the pinned Handoff Go skill above.\nKeep this line.");
-  const migratedBlock = updateManagedBlock(integratedAgents, { ref: "d".repeat(40), migrations: routeManifest });
-  assert(migratedBlock.includes("For the exact ordinary-text messages `go` and `go update`"), "updateManagedBlock integrated migrations");
-  assert(migratedBlock.includes("Keep this line."), "surrounding prose preserved");
-  assert(migratedBlock.includes("# Repo") && migratedBlock.includes("Footer text outside"), "outside block preserved");
-  throws(() => parseManagedBlock("no block here"), /not opted in/, "missing block");
-  throws(() => parseManagedBlock(agents + agents), /exactly one managed block/, "duplicate block");
-  const dupSkill = agents.replace(/- Skill:.*/, "- Skill: `a/SKILL.md`\n- Skill: `b/SKILL.md`");
-  throws(() => parseManagedBlock(dupSkill), /exactly one Skill/, "duplicate skill");
-  const floating = agents.replace(/- Immutable ref:.*/, "- Immutable ref: `main`");
-  throws(() => parseManagedBlock(floating), /floating governance ref/, "floating ref");
-  throws(() => updateManagedBlock(agents, { ref: "main" }), /immutable commit/, "update to floating ref");
-
-  // porcelain -z parsing: the first entry's leading status space is significant
-  const status = " M .agents/skills/handoff-go/SKILL.md\0A  .omp/watch.mjs\0R  new/p\0old/p\0";
-  assert(
-    JSON.stringify(changedPaths(status)) ===
-      JSON.stringify([".agents/skills/handoff-go/SKILL.md", ".omp/watch.mjs", "new/p", "old/p"]),
-    "porcelain -z paths keep their first byte",
-  );
-
-  const skillDirRel = ".agents/skills/handoff-go";
-  assert(outsideScope(changedPaths(status), skillDirRel).length === 2, "unmanaged paths are rejected");
-  assert(outsideScope(["AGENTS.md", `${skillDirRel}/watch.mjs`, ".omp/extensions/handoff-go-watch.js"], skillDirRel).length === 0, "managed surface allowed");
-
-  // Only same-repo PRs onto the trusted base can be update authority.
-  const branch = `${BRANCH_PREFIX}deadbeef`;
-  const own = (headRefName, baseRefName = "main") => ({ headRefName, baseRefName, isCrossRepository: false, url: "u" });
-  const fork = (headRefName, baseRefName = "main") => ({ headRefName, baseRefName, isCrossRepository: true, url: "f" });
-  assert(classifyProposal([], branch, "main").kind === "none", "no proposal");
-  assert(classifyProposal([own(branch)], branch, "main").kind === "reuse", "same ref reuses");
-  assert(classifyProposal([own(`${BRANCH_PREFIX}0badcafe`)], branch, "main").kind === "conflict", "other ref conflicts");
-  assert(classifyProposal([own("feature/x")], branch, "main").kind === "none", "unrelated PR ignored");
-  assert(classifyProposal([fork(branch)], branch, "main").kind === "none", "fork PR is never update authority");
-  const wrongBase = classifyProposal([own(branch, "release")], branch, "main");
-  assert(wrongBase.kind === "conflict" && wrongBase.reason === "base", "same-repo proposal onto wrong base conflicts");
-  assert(classifyProposal([{ headRefName: branch, baseRefName: "main", url: "u" }], branch, "main").kind === "none", "unproven same-repo flag is not authority");
-
-  const plan = planRuntime([".omp/watch.mjs", ".omp/extensions/handoff-go-watch.mjs"]);
-  assert(JSON.stringify(plan.refresh) === JSON.stringify([[".omp/watch.mjs", "watch.mjs"]]), "refreshes only enabled copies");
-  assert(plan.migrate[0][1] === ".omp/extensions/handoff-go-watch.js", "legacy .mjs migrates to .js");
-  assert(plan.absent.includes(".pi/watch.mjs"), "absent integration stays absent");
-
-  // Authority is derived from the trusted copy, and destructive paths are
-  // rejected before any filesystem step.
-  const repoAbs = "/tmp/consumer";
-  const hostile = agents
-    .replace("- Immutable ref: `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` (applied at release)", "- Immutable ref: `cccccccccccccccccccccccccccccccccccccccc`")
-    .replace("- Skill: `skills/handoff-go/SKILL.md`", "- Skill: `SKILL.md`")
-    .replace("- Trusted default branch: `main`", "- Trusted default branch: `attacker`");
-  const good = resolveTrusted({ agentsText: agents, resolvedBranch: "main", repoAbs });
-  assert(good.oldRef.startsWith("aaaa") && good.skillDirRel === "skills/handoff-go", "trusted copy supplies pin and skill dir");
-  assert(good.trustedBranch === "main", "trusted branch is the independently resolved one");
-  throws(
-    () => resolveTrusted({ agentsText: hostile, resolvedBranch: "main", repoAbs }),
-    /names default branch attacker/,
-    "bootstrap contradicting the resolved default branch",
-  );
-  throws(
-    () => resolveTrusted({ agentsText: agents.replace("- Skill: `skills/handoff-go/SKILL.md`", "- Skill: `SKILL.md`"), resolvedBranch: "main", repoAbs }),
-    /resolves to the repository root/,
-    "root Skill path",
-  );
-  throws(
-    () => resolveTrusted({ agentsText: agents.replace("- Skill: `skills/handoff-go/SKILL.md`", "- Skill: `./SKILL.md`"), resolvedBranch: "main", repoAbs }),
-    /resolves to the repository root/,
-    "dot-relative root Skill path",
-  );
-  throws(
-    () => resolveTrusted({ agentsText: agents.replace("- Skill: `skills/handoff-go/SKILL.md`", "- Skill: `sub/../../escape/SKILL.md`"), resolvedBranch: "main", repoAbs }),
-    /escaping Skill path/,
-    "escaping Skill path",
-  );
-  throws(
-    () => resolveTrusted({ agentsText: "no managed block", resolvedBranch: "main", repoAbs }),
-    /not opted in/,
-    "trusted copy without a managed block",
-  );
-
-  // `GO_UPDATE_READY` may only head a report that carries a durable PR.
-  const captured = [];
-  const realLog = console.log;
-  console.log = (line) => captured.push(String(line));
-  try {
-    report({ result: "PREPARED", oldRef: "a".repeat(40), newRef: "b".repeat(40), proposalBranch: `${BRANCH_PREFIX}bbbbbbbb`, changedPaths: ["AGENTS.md"], transitions: { insideUpdater: 4 } });
-    report({ result: "PREPARED", oldRef: "a".repeat(40), newRef: "b".repeat(40), proposalBranch: `${BRANCH_PREFIX}bbbbbbbb`, changedPaths: ["AGENTS.md"], transitions: { insideUpdater: 4 } }, { verbose: true });
-    report({ result: "REUSE", oldRef: "a".repeat(40), newRef: "b".repeat(40), existingProposal: { url: "https://example.invalid/pr/1" } });
-    report({ result: "UP_TO_DATE", oldRef: "a".repeat(40) });
-    report({ result: "UP_TO_DATE", oldRef: "a".repeat(40), provenance: { repository: "o/r" }, transitions: { insideUpdater: 2 } }, { verbose: true });
-  } finally {
-    console.log = realLog;
-  }
-  assert(captured[0].split("\n")[0].startsWith("PREPARED"), "prepared report is not a protocol state");
-  assert(!captured[0].includes("Changed:"), "quiet prepared report omits Changed paths");
-  assert(!captured[0].includes("Transitions inside updater:"), "quiet prepared report omits Transitions");
-  assert(captured[1].includes("Changed: AGENTS.md"), "verbose prepared report includes Changed paths");
-  assert(captured[1].includes("Transitions inside updater: 4"), "verbose prepared report includes Transitions");
-  assert(captured[2].split("\n")[0] === "GO_UPDATE_READY", "reuse reports the standard outcome");
-  assert(captured[2].includes("Old ref: aaaaaaaa"), "reuse reports short old ref by default");
-  assert(captured[2].includes("PR: https://example.invalid/pr/1"), "reuse reports the durable PR");
-  assert(captured[0].includes("Do NOT clean up old branches"), "prepared instructions include maintenance stop boundary");
-  assert(captured[0].includes("Emit every terminal outcome verbatim"), "prepared instructions require verbatim outcome emission");
-  assert(captured[2].includes("Next Actor: ARCHITECT"), "reuse routes to the Architect");
-  assert(captured[3] === `GO_UP_TO_DATE\nCurrent ref: ${"a".repeat(8)}`, "quiet up-to-date output matches target format");
-  assert(captured[4].includes(`Current ref: ${"a".repeat(40)}`) && captured[4].includes("Provenance:"), "verbose up-to-date output includes diagnostic fields");
-
-  // The pinned ref reaches `git fetch`, so the launcher revalidates it too.
-  throws(() => materializePinned("main", []), /floating ref is not executable authority|floating ref executable authority/, "floating ref is not executable authority");
-  throws(() => materializePinned("v1 --upload-pack=x", []), /malformed Handoff Go ref/, "ref carrying arguments");
-
-  console.log("update core: PASS");
-}
 
 // Compare realpaths: on hosts where the temporary directory is a symlink
 // (macOS `/var` -> `/private/var`), `file://${process.argv[1]}` never matches
@@ -1187,9 +935,7 @@ if (invokedDirectly) {
     console.error(`${kind}\n${e.message.replace(`${kind}: `, "")}`);
     process.exit(kind === "GO_UPDATE_CONFLICT" ? 1 : 2);
   };
-  if (!mode) {
-    demo();
-  } else if (mode === "prepare") {
+  if (mode === "prepare") {
     try {
       const ev = prepare({ repoDir: flag("--repo-dir", process.cwd()), dryRun: rest.includes("--dry-run") });
       if (rest.includes("--json")) console.log(JSON.stringify(ev, null, 2));
