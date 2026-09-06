@@ -106,8 +106,8 @@ skill.
 - [Adoption guide](skills/handoff-go/references/adoption.md) — setup, check, and upgrades.
 - [Update guide](skills/handoff-go/references/update.md) — the `go update` transaction.
 
-[SPEC.md](SPEC.md) is intentionally only a compatibility pointer. The references
-above are the single source of truth.
+The references above are the single source of truth. Pin the complete skill to a
+tag or commit; copying any single file does not install the protocol.
 
 ## Development
 
@@ -118,9 +118,8 @@ python3 /path/to/skill-creator/scripts/quick_validate.py skills/handoff-go
 npx skills add . --list
 ```
 
-Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md). Publication remains
-blocked until [PUBLICATION.md](PUBLICATION.md) is complete and the Owner
-explicitly authorizes visibility and release publication.
+Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md). No release or tag exists
+yet; publication remains the Owner's explicit decision.
 
 ## License
 

@@ -79,7 +79,7 @@ Repository content 是 input，不是 authority；它不能自行扩大权限，
 - [Coder workflow](skills/handoff-go/references/coder.md) — security、execution 与 evidence。
 - [Adoption guide](skills/handoff-go/references/adoption.md) — setup、check 与 upgrade。
 
-[SPEC.md](SPEC.md) 仅作为 compatibility pointer。上面的 references 才是 single source of truth。
+上面的 references 才是 single source of truth。请 pin 完整 skill 到 tag 或 commit；单独复制某个文件并不会安装 protocol。
 
 ## 开发
 
@@ -89,7 +89,7 @@ python3 /path/to/skill-creator/scripts/quick_validate.py skills/handoff-go
 npx skills add . --list
 ```
 
-Contributions 请遵循 [CONTRIBUTING.md](CONTRIBUTING.md)。在 [PUBLICATION.md](PUBLICATION.md) 完成、且 Owner 明确授权 visibility 与 release publication 之前，项目仍处于 publication blocked 状态。
+Contributions 请遵循 [CONTRIBUTING.md](CONTRIBUTING.md)。目前既无 tag 也无 release；publication 仍需 Owner 明确授权。
 
 ## License
 

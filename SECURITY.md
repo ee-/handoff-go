@@ -33,8 +33,7 @@ reproduction, and expected safe behavior. Third-party harness vulnerabilities
 belong with those projects unless Handoff Go materially creates the unsafe
 condition.
 
-## Publication gate
+## Release gate
 
-The repository remains private until every applicable item in
-[PUBLICATION.md](PUBLICATION.md) passes and the Owner explicitly authorizes
-publication.
+The repository is public and unreleased: no tag or GitHub Release exists. Any
+release or publication requires the Owner's explicit authorization.
