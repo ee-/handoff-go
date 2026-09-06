@@ -1,6 +1,8 @@
 # Changelog
 
-## 1.3.0 — pending
+## Unreleased
+
+Nothing released yet: no tag, no GitHub Release. Everything below is pending.
 
 `go update` — project-local Handoff Go upgrade:
 
@@ -85,8 +87,6 @@
   (push, PR);
 - documented one-time migration path for pre-transaction adopters.
 
-## 1.2.0 — pending
-
 Coder Event Watch (repository-level wake), OpenAI Codex reference:
 
 - `.github/workflows/handoff-go-coder-event-watch.yml` using the official
@@ -125,8 +125,6 @@ Coder Event Watch (repository-level wake), OpenAI Codex reference:
   Pi / OMP / DeepSeek Harness only `HEADLESS_READY` (not implemented);
 - Local `go watch` behavior unchanged.
 
-## 1.1.0 — pending
-
 Coder watch (`go watch`):
 
 - `go watch`, `go watch <interval>`, `go watch stop` Coder command surface;
@@ -141,9 +139,8 @@ Coder watch (`go watch`):
   `Next Actor: NONE` when no protocol work remains;
 - per-harness compatibility table updated; Pi Local Watch marked `UNVERIFIED`
   pending real native discovery smoke.
-## 1.0.0 — pending
 
-Initial public Handoff Go release candidate:
+Initial Handoff Go baseline:
 
 - one dependency-free universal `handoff-go` skill package;
 - project-local setup and read-only adoption check;
@@ -153,7 +150,6 @@ Initial public Handoff Go release candidate:
 - trusted-governance loading and mandatory Coder Security Gate;
 - exact-head Architect review and truthful same-principal fallback;
 - fail-closed ambiguity and no-silent-wait invariant;
-- dependency-free validation and publication gate.
+- dependency-free validation.
 
-This supersedes unpublished private development baselines. No earlier public
-release exists.
+This supersedes unpublished private development baselines. No release exists yet.
