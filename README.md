@@ -26,6 +26,28 @@ go
 It is role-relative and active only in repositories whose trusted root
 `AGENTS.md` opts into a pinned Handoff Go version.
 
+## Minimal get started
+
+### 1. Coder install / setup
+
+Paste into your coding agent (Codex, Claude Code, OpenCode, Pi, etc.):
+
+```text
+Install and set up Handoff Go in this repository:
+https://github.com/ee-/handoff-go
+```
+
+### 2. ChatGPT Architect pickup
+
+Paste into ChatGPT Chat:
+
+```text
+Act as the Handoff Go Architect for this repository:
+<repository-url>
+
+Read the trusted root AGENTS.md and load its pinned Handoff Go skill.
+```
+
 ## Install
 
 After the repository is public, install it project-locally with the open
