@@ -590,13 +590,19 @@ export function repoSlug(repoDir, io = productionIO) {
       "no origin remote, so trusted repository provenance cannot be established; set GH_REPO=owner/name to declare the canonical GitHub identity",
     );
   }
-  const m = url.match(/github\.com[:/]+([^/]+)\/(.+?)(?:\.git)?$/);
-  if (m) return [m[1], m[2]];
+  // Standard GitHub remotes, host-anchored (the host must BE github, not
+  // merely contain it): exact https://github.com and the exact SSH endpoints
+  // from sshEndpoint. Zero extra effects on this path, as before.
+  const https = url.match(/^https:\/\/(?:[^@/\s]+@)?github\.com\/([^/\s]+)\/([^/\s]+?)(?:\.git)?$/);
+  if (https && SLUG_SHAPE.test(`${https[1]}/${https[2]}`)) return [https[1], https[2]];
+  const ssh = sshEndpoint(url);
+  if (ssh && GH_SSH_HOSTS.has(ssh.host.toLowerCase())) return [ssh.owner, ssh.name];
   // A legitimate multi-account SSH `Host` alias for GitHub does not contain
   // the literal github.com: accept the alias's owner/name only when git uses
   // its default OpenSSH transport and that client resolves the alias itself
-  // to github.com. Any other shape fails closed before discovery or mutation.
-  const ssh = sshEndpoint(url);
+  // to github.com. Anything else — including a host that merely spells
+  // `github.com` inside a longer name — falls through and fails closed
+  // before discovery or mutation.
   if (ssh && defaultSshTransport(repoDir, io) && ghSshHostResolved(io, ssh.host)) {
     return [ssh.owner, ssh.name];
   }

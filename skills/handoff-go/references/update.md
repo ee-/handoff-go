@@ -94,14 +94,16 @@ can never redirect it. Installed bytes and the pin always come from the same
 resolved commit, and no floating pin may remain.
 
 **Repository identity** is established before that discovery: explicit
-`GH_REPO=owner/name`, then a standard GitHub HTTPS/SSH origin, then a
-legitimate SSH `Host` alias — accepted only when git uses its default OpenSSH
-transport (no `GIT_SSH`, `GIT_SSH_COMMAND`, `core.sshCommand`, or
-`ssh.variant`) and `ssh -G` (pure local OpenSSH config expansion: no network,
-no authentication) resolves the alias's own `hostname` to GitHub. An alias
-string never proves GitHub by itself, working tree content never supplies
-identity, and any unresolvable, ambiguous, or non-default-transport identity
-fails closed with `GH_REPO=owner/name` named as the concrete remediation.
+`GH_REPO=owner/name`, then a standard GitHub HTTPS/SSH origin whose host is
+**exactly** `github.com`/`ssh.github.com` (a host that merely contains
+`github.com` is not GitHub), then a legitimate SSH `Host` alias — accepted
+only when git uses its default OpenSSH transport (no `GIT_SSH`,
+`GIT_SSH_COMMAND`, `core.sshCommand`, or `ssh.variant`) and `ssh -G` (pure
+local OpenSSH config expansion: no network, no authentication) resolves the
+alias's own `hostname` to GitHub. An alias string never proves GitHub by
+itself, working tree content never supplies identity, and any unresolvable,
+ambiguous, or non-default-transport identity fails closed with
+`GH_REPO=owner/name` named as the concrete remediation.
 
 Script = mechanism, not policy. The updater decides only mechanical facts. It
 never decides acceptance, Architect/Owner approval, Work Order selection,

@@ -1044,6 +1044,75 @@ function setupEnvironment() {
 }
 
 {
+  // AC-3 (review blocker): the standard fast path recognizes only the EXACT
+  // GitHub host — hosts that merely contain "github.com" must not shortcut it.
+  // The SSH negative must fall through INTO the bounded alias proof (ssh is
+  // consulted for the foreign host, then fails closed), never return identity.
+  const envA = setupEnvironment();
+  try {
+    const fake = createRecordingFakeIO({
+      originUrl: "git@evilgithub.com:acme/widgets.git",
+      oldSkillDir: envA.oldSkillDir,
+      newSkillDir: envA.newSkillDir,
+    });
+    assert.throws(
+      () => prepare({ repoDir: envA.repoDir, io: fake }),
+      (e) => {
+        assert.equal(e.code, "GO_UPDATE_ERROR");
+        assert.match(e.message, /cannot derive a GitHub owner\/name/);
+        return true;
+      },
+      "evilgithub.com SSH is not the GitHub fast path",
+    );
+    const sshCall = fake.calls.find((c) => c.type === "ssh");
+    assert.ok(sshCall && sshCall.args[0] === "evilgithub.com", "fell through to the alias proof, which then failed closed");
+    assert.equal(fake.calls.some((c) => c.type === "gh"), false, "no GitHub discovery");
+  } finally {
+    envA.cleanup();
+  }
+  // HTTPS equivalents with substring hosts must not match the anchored https
+  // form either; they are not sshEndpoint forms, so identity fails directly.
+  for (const bad of [
+    "https://evilgithub.com/acme/widgets.git",
+    "https://github.com.evil.invalid/acme/widgets.git",
+    "ssh://git@evil-github.com:22/acme/widgets.git",
+  ]) {
+    const env = setupEnvironment();
+    try {
+      const fake = createRecordingFakeIO({ originUrl: bad, oldSkillDir: env.oldSkillDir, newSkillDir: env.newSkillDir });
+      assert.throws(() => prepare({ repoDir: env.repoDir, io: fake }), /cannot derive a GitHub owner\/name/, bad);
+      assert.equal(fake.calls.some((c) => c.type === "gh"), false, `${bad}: no GitHub discovery`);
+    } finally {
+      env.cleanup();
+    }
+  }
+  // Standard positive regressions still short-circuit with zero extra effects.
+  for (const [ok, origin] of [
+    ["https", "https://github.com/ee-/handoff-go.git"],
+    ["https userinfo", "https://oauth2@github.com/ee-/handoff-go.git"],
+    ["ssh scp", "git@github.com:ee-/handoff-go.git"],
+    ["ssh url", "ssh://git@github.com/ee-/handoff-go.git"],
+    ["ssh.github.com", "git@ssh.github.com:ee-/handoff-go.git"],
+  ]) {
+    const env = setupEnvironment();
+    try {
+      const fake = createRecordingFakeIO({
+        originUrl: origin,
+        oldSkillDir: env.oldSkillDir,
+        newSkillDir: env.newSkillDir,
+        populateWorktree: env.populateWorktree,
+      });
+      const ev = prepare({ repoDir: env.repoDir, io: fake });
+      assert.equal(ev.provenance.repository, "ee-/handoff-go", `${ok} fast path preserved`);
+      assert.equal(fake.calls.filter((c) => c.type === "ssh").length, 0, `${ok}: no ssh consultation`);
+      assert.equal(fake.calls.filter((c) => c.type === "git" && c.args[0] === "config").length, 0, `${ok}: no transport probes`);
+    } finally {
+      env.cleanup();
+    }
+  }
+}
+
+{
   // BLOCKER 2 guard: when git's SSH transport is not the default OpenSSH
   // client, the bare `ssh -G` proof would describe a command git never runs.
   // The alias path must fail closed — before consulting ssh at all — even
