@@ -1,8 +1,11 @@
 # Adopt and check Handoff Go
 
 Read this reference for `$handoff-go setup`, `$handoff-go check`, or a pinned
-Handoff Go upgrade. Setup changes only the project bootstrap unless the user
-explicitly requests more.
+Handoff Go upgrade. Setup changes the project bootstrap, and — when the current
+Coder harness is reliably identified as OMP — also materializes the OMP Local
+Watch integration bytes so `go watch` is ready after one restart. Setup never
+starts a watcher, never claims one is active, and never touches any other
+harness adapter.
 
 ## Requirements
 
@@ -48,7 +51,30 @@ transaction, never by hand.
 6. Write the block using the proven values, re-read the file, and confirm every
    field is concrete and the surrounding instructions are byte-for-byte
    preserved.
-7. Run the checks below. Finish with `GO_READY` only when every check passes.
+7. If the current Coder harness is reliably identified as OMP — the harness
+   sets `OMPCODE=1` in its own child shell environment, so a `.omp/` directory
+   alone is never evidence (it may be stale or contributor-controlled) —
+   materialize the OMP Local Watch integration bytes from the same pinned skill
+   directory `prove` reported, byte-identical and idempotent:
+
+   ```sh
+   node <project-relative-skill-dir>/update.mjs materialize \
+     --repo-dir <repository-root> --skill-dir <project-relative-skill-dir>
+   ```
+
+   It prints `ADAPTER_MATERIALIZED` with the paths it ensured, or
+   `ADAPTER_NONE` on a non-OMP/ambiguous harness (writing nothing). It preflights
+   every target and its whole parent chain: a missing target is created, an
+   existing byte-identical regular file is a no-op, and an existing-but-different
+   or non-regular/symlink target — or any symlink/non-directory/unreadable parent
+   (e.g. `.omp` or `.omp/extensions` itself pointing outside the repository) —
+   fails closed with `GO_UPDATE_CONFLICT` and zero writes (all-or-nothing: setup
+   never overwrites a divergent copy, never writes through a bad parent, never
+   partially materializes). It never starts a watcher and never claims one is
+   active; `go watch` remains runtime activation only. A harness that cannot be
+   reliably identified is never treated as OMP.
+
+8. Run the checks below. Finish with `GO_READY` only when every check passes.
 
 Managed block:
 
@@ -77,16 +103,20 @@ Write the routing declaration as one physical line: governed updates match and
 migrate it as a single-line declaration, and a wrapped copy is only repaired on
 the next governed update.
 
-## Watch (optional, post-setup)
+## Watch (setup-complete in supported harnesses)
 
-First-time adoption never runs `go watch`, never copies adapter files, and
-never touches harness configuration. `go watch` (Coder only) ships with the
-skill — the shared core (`watch.mjs`) and the universal extension adapter in
-`adapters/watch.js`. Enabling it is a separate, explicit request: for OMP/Pi,
-copy the shared core and the adapter into the harness root and extension
-dir — `watch.mjs` to `.omp/watch.mjs` / `.pi/watch.mjs`, and `adapters/watch.js`
-to `.omp/extensions/handoff-go-watch.js` / `.pi/extensions/handoff-go-watch.js`
-(see [watch.md](watch.md)).
+`go watch` (Coder only) ships with the skill — the shared core (`watch.mjs`)
+and the universal extension adapter in `adapters/watch.js`. For OMP, a
+supported harness, setup already materializes both bytes (step 7 above):
+`.omp/watch.mjs` and `.omp/extensions/handoff-go-watch.js`, byte-identical to
+the pinned skill. After the required OMP restart, `go watch` is active with no
+separate enable or manual-copy step. Setup still never runs `go watch` and
+never claims a watcher is active — it only puts the bytes on disk.
+
+For Pi, Local Watch remains `UNVERIFIED` (no native-discovery smoke has been
+run), and setup intentionally does not materialize `.pi/` bytes. The manual
+copy described in [watch.md](watch.md) documents the byte layout/mechanism;
+it is not the primary supported onboarding path.
 
 ## Retry
 

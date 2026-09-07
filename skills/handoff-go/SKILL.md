@@ -36,7 +36,9 @@ bypass authority, security, or repository permissions.
 ## Route
 
 - **setup** — Read [adoption.md](references/adoption.md), then
-  [core.md](references/core.md). Add or update the managed project bootstrap.
+  [core.md](references/core.md). Add or update the managed project bootstrap
+  and, when the current harness is reliably identified as OMP, materialize the
+  OMP Local Watch integration bytes (never starts a watcher).
 - **check** — Read [adoption.md](references/adoption.md), then validate every
   adoption criterion without changing the repository.
 - **go** — Read [core.md](references/core.md), resolve the current role, then

@@ -9,8 +9,8 @@
 // promotion are decided in update.md — never here.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
@@ -34,6 +34,37 @@ const LEGACY = {
   ".omp/extensions/handoff-go-watch.mjs": ".omp/extensions/handoff-go-watch.js",
   ".pi/extensions/handoff-go-watch.mjs": ".pi/extensions/handoff-go-watch.js",
 };
+
+// Which harness owns each managed runtime entry: OMP uses `.omp/`, Pi uses `.pi/`.
+const RUNTIME_HARNESS = {
+  ".omp/watch.mjs": "omp",
+  ".pi/watch.mjs": "pi",
+  ".omp/extensions/handoff-go-watch.js": "omp",
+  ".pi/extensions/handoff-go-watch.js": "pi",
+};
+
+// Per-harness runtime entry lists for materialization: repo-relative path ->
+// skill-relative source. This is the single definition shared by first-adoption
+// setup and the governed update path; never duplicate the copy logic.
+export const HARNESS_RUNTIME = {
+  omp: [
+    [".omp/watch.mjs", "watch.mjs"],
+    [".omp/extensions/handoff-go-watch.js", "adapters/watch.js"],
+  ],
+  pi: [
+    [".pi/watch.mjs", "watch.mjs"],
+    [".pi/extensions/handoff-go-watch.js", "adapters/watch.js"],
+  ],
+};
+
+// Reliable, observed harness identity for setup/update materialization. OMP sets
+// `OMPCODE=1` in the child shell environment it spawns, so this is harness-process
+// state, never contributor-controlled project content: a `.omp/` directory may be
+// stale or hostile and is therefore not evidence. Pi remains `UNVERIFIED` and is
+// never auto-detected here.
+export function detectHarness(env = process.env) {
+  return env.OMPCODE === "1" ? "omp" : null;
+}
 
 function conflicts(detail) {
   const err = new Error(`GO_UPDATE_CONFLICT: ${detail}`);
@@ -365,19 +396,27 @@ function classifyProposal(openPrs, branch, trustedBranch) {
 }
 
 // Only recognized copies that are actually enabled are touched; absent
-// integration stays absent.
-function planRuntime(presentPaths) {
+// integration stays absent UNLESS the running harness is detected, in which case
+// that harness's missing integration is brought setup-complete (existing-adopter
+// migration). `harness` is a reliably detected value (see detectHarness).
+function planRuntime(presentPaths, harness = null) {
   const refresh = [];
+  const create = [];
   const migrate = [];
   const absent = [];
   for (const [rel, src] of Object.entries(RUNTIME)) {
-    if (presentPaths.includes(rel)) refresh.push([rel, src]);
-    else absent.push(rel);
+    if (presentPaths.includes(rel)) {
+      refresh.push([rel, src]);
+    } else if (harness && RUNTIME_HARNESS[rel] === harness) {
+      create.push([rel, src]);
+    } else {
+      absent.push(rel);
+    }
   }
   for (const [legacyRel, nativeRel] of Object.entries(LEGACY)) {
     if (presentPaths.includes(legacyRel)) migrate.push([legacyRel, nativeRel, RUNTIME[nativeRel]]);
   }
-  return { refresh, migrate, absent };
+  return { refresh, create, migrate, absent };
 }
 
 function treeFiles(dir) {
@@ -455,6 +494,114 @@ function sameBytes(actual, expected, label) {
   if (!existsSync(expected) || !readFileSync(actual).equals(readFileSync(expected))) {
     throw conflicts(`recognized managed runtime copy drifted or is unverifiable: ${label}`);
   }
+}
+
+// Idempotent byte comparison: true when both paths exist and are byte-identical.
+function sameBytesValue(a, b) {
+  return existsSync(a) && existsSync(b) && readFileSync(a).equals(readFileSync(b));
+}
+
+// Classify one materialization target against its pinned source, for the
+// all-or-nothing preflight:
+//   missing                          -> would be created
+//   existing + identical regular file -> no-op
+//   existing + different, non-regular, or uninspectable -> conflict
+function classifyTarget(target, source) {
+  let st;
+  try {
+    st = lstatSync(target);
+  } catch (e) {
+    if (e.code === "ENOENT") return { kind: "missing" };
+    return { kind: "conflict", detail: `${target} cannot be inspected (${e.code || "error"})` };
+  }
+  if (st.isSymbolicLink() || !st.isFile()) {
+    return { kind: "conflict", detail: `${target} is not a regular file` };
+  }
+  if (sameBytesValue(target, source)) return { kind: "identical" };
+  return { kind: "conflict", detail: `${target} differs from the pinned runtime bytes` };
+}
+
+// Verify every existing component of the target's parent chain (walking from
+// `repoDir` outward to `dirname(target)`) is a real, readable directory. A
+// symlink or non-directory anywhere in the chain is a conflict: `.omp` (or
+// `.omp/extensions`) could be a symlink redirecting the materialized bytes
+// outside the repository. A missing component is fine — it is created only after
+// the whole preflight succeeded, never through an existing symlink. Returns
+// `{ ok, needsCreate, detail }`; `needsCreate` means at least one parent dir is
+// absent and must be created in the (post-preflight) write phase.
+function classifyParentChain(repoDir, target) {
+  const parentRel = relative(repoDir, dirname(target));
+  if (parentRel === "" || parentRel === ".") return { ok: true, needsCreate: false };
+  if (parentRel.startsWith("..")) return { ok: false, detail: `${dirname(target)} escapes the repository` };
+  const parts = parentRel.split(/[\\/]+/).filter(Boolean);
+  let current = repoDir;
+  let needsCreate = false;
+  for (const part of parts) {
+    current = join(current, part);
+    let st;
+    try {
+      st = lstatSync(current);
+    } catch (e) {
+      if (e.code === "ENOENT") {
+        needsCreate = true;
+        continue;
+      }
+      return { ok: false, detail: `${current} cannot be inspected (${e.code || "error"})` };
+    }
+    if (needsCreate) return { ok: false, detail: `${current} exists beneath a missing parent` };
+    if (st.isSymbolicLink() || !st.isDirectory()) {
+      return { ok: false, detail: `${current} is not a real directory${st.isSymbolicLink() ? " (symlink)" : ""}` };
+    }
+  }
+  return { ok: true, needsCreate };
+}
+
+// Materialize the managed runtime bytes for a reliably detected harness from the
+// pinned skill source. All-or-nothing and fail-closed: preflight every target
+// AND its parent chain so a missing target is created, an existing byte-identical
+// regular file is a no-op, but any existing-but-different / non-regular / symlink
+// target, or any symlink / non-directory / unreadable parent, fails closed with
+// GO_UPDATE_CONFLICT and zero writes — nothing is written inside or outside the
+// repository. `harness` must come from `detectHarness`; an unknown harness is a
+// caller bug, so it fails closed rather than guessing.
+// Returns the repo-relative paths that are now present and correct.
+export function materializeHarnessRuntime({ skillDir, repoDir, harness }) {
+  const entries = HARNESS_RUNTIME[harness];
+  if (!entries) throw new Error(`GO_UPDATE_ERROR unknown harness: ${harness}`);
+  // Preflight all targets and their parent chains before touching the filesystem.
+  const conflictDetails = [];
+  const plan = [];
+  for (const [rel, src] of entries) {
+    const target = join(repoDir, rel);
+    const source = join(skillDir, src);
+    if (!existsSync(source)) {
+      throw new Error(`GO_UPDATE_ERROR pinned skill is missing runtime source ${src} (${source})`);
+    }
+    const chain = classifyParentChain(repoDir, target);
+    if (!chain.ok) conflictDetails.push(`\`${rel}\`: ${chain.detail}`);
+    const { kind, detail } = classifyTarget(target, source);
+    if (kind === "conflict") conflictDetails.push(`\`${rel}\`: ${detail}`);
+    plan.push({ rel, target, source, kind, chain });
+  }
+  if (conflictDetails.length) {
+    throw conflicts(
+      `setup will not overwrite an existing OMP runtime copy or write through a bad parent: ${conflictDetails.join("; ")}. resolve the divergence (or remove the offending file/symlink) and re-run setup; use \`go update\` to refresh a recognized copy`,
+    );
+  }
+  const ensured = [];
+  for (const { rel, target, source, kind, chain } of plan) {
+    if (kind === "missing") {
+      // Defense-in-depth over the preflight: re-verify the parent chain is still
+      // real directories (never a symlink) immediately before writing.
+      const recheck = classifyParentChain(repoDir, target);
+      if (!recheck.ok) throw conflicts(`setup will not write through a bad parent: \`${rel}\`: ${recheck.detail}`);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, readFileSync(source));
+    }
+    // identical -> no-op (bytes already match); both count as ensured.
+    ensured.push(rel);
+  }
+  return ensured;
 }
 
 // Extract one upstream commit's skill tree locally (no network).
@@ -710,7 +857,11 @@ export function resolveTrustedUpdater({ repoDir = process.cwd(), io = production
 // may only be emitted once the proposal PR itself exists.
 export function prepare(opts = {}, injectedIO) {
   const io = injectedIO || opts?.io || productionIO;
-  const { repoDir = process.cwd(), dryRun = false } = (typeof opts === "string" ? { repoDir: opts } : opts) || {};
+  const prepared = (typeof opts === "string" ? { repoDir: opts } : opts) || {};
+  const { repoDir = process.cwd(), dryRun = false, harness: harnessOpt } = prepared;
+  // Detected harness drives the existing-adopter migration: when the running
+  // harness is OMP, a missing OMP integration is brought setup-complete.
+  const harness = harnessOpt ?? detectHarness();
   const repo = resolve(repoDir);
   const ev = {
     result: null,
@@ -723,7 +874,7 @@ export function prepare(opts = {}, injectedIO) {
     proposalBranch: null,
     existingProposal: null,
     changedPaths: [],
-    runtime: { refreshed: [], migrated: [], absent: [] },
+    runtime: { refreshed: [], migrated: [], created: [], absent: [] },
     validation: {},
     transitions: { insideUpdater: 0, outsidePlanned: 0 },
   };
@@ -826,7 +977,15 @@ export function prepare(opts = {}, injectedIO) {
       throw conflicts(`installed Handoff Go bytes differ from pinned ${ev.oldRef.slice(0, 8)}: ${drift.slice(0, 5).join(", ")}`);
     }
     const present = [...Object.keys(RUNTIME), ...Object.keys(LEGACY)].filter((p) => existsSync(join(worktree, p)));
-    const plan = planRuntime(present);
+    const plan = planRuntime(present, harness);
+    // All-or-nothing parent-chain preflight BEFORE any write: the detected-harness
+    // `create` path must never write through a symlinked / non-directory parent
+    // (e.g. `.omp` or `.omp/extensions` pointing outside the repo). Fail closed
+    // here so the whole runtime refresh is atomic and nothing escapes the worktree.
+    for (const [rel] of plan.create) {
+      const chain = classifyParentChain(worktree, join(worktree, rel));
+      if (!chain.ok) throw conflicts(`update will not write through a bad parent: \`${rel}\`: ${chain.detail}`);
+    }
     for (const [rel, src] of plan.refresh) sameBytes(join(worktree, rel), join(oldSkill, src), rel);
     for (const [legacyRel, , src] of plan.migrate) {
       const legacyOld = join(oldSkill, "adapters/watch.mjs");
@@ -860,12 +1019,24 @@ export function prepare(opts = {}, injectedIO) {
       writeFileSync(join(worktree, rel), readFileSync(join(newSkill, src)));
       ev.runtime.refreshed.push(rel);
     }
+    for (const [rel, src] of plan.create) {
+      const target = join(worktree, rel);
+      // Defense-in-depth over the preflight: re-verify the parent chain is still
+      // real directories (never a symlink) immediately before writing.
+      const recheck = classifyParentChain(worktree, target);
+      if (!recheck.ok) throw conflicts(`update will not write through a bad parent: \`${rel}\`: ${recheck.detail}`);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, readFileSync(join(newSkill, src)));
+      ev.runtime.created.push(rel);
+    }
     for (const [legacyRel, nativeRel, src] of plan.migrate) {
-      writeFileSync(join(worktree, nativeRel), readFileSync(join(newSkill, src)));
+      const target = join(worktree, nativeRel);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, readFileSync(join(newSkill, src)));
       rmSync(join(worktree, legacyRel), { force: true });
       ev.runtime.migrated.push(`${legacyRel} -> ${nativeRel}`);
     }
-    const created = new Set(plan.migrate.map(([, nativeRel]) => nativeRel));
+    const created = new Set([...plan.migrate.map(([, nativeRel]) => nativeRel), ...plan.create.map(([rel]) => rel)]);
     ev.runtime.absent = plan.absent.filter((rel) => !created.has(rel));
 
     // consumer-side validation: exact installation + project integration only
@@ -1031,6 +1202,36 @@ if (invokedDirectly) {
     } catch (e) {
       fail(e);
     }
+  } else if (mode === "materialize") {
+    // First-adoption setup surface: when the running harness is reliably OMP,
+    // materialize the OMP runtime bytes from the pinned skill dir. A non-OMP or
+    // ambiguous harness is a safe no-op — never install an adapter by guesswork.
+    try {
+      const repoDir = resolve(flag("--repo-dir", process.cwd()));
+      const harness = detectHarness();
+      if (!harness) {
+        const out = { harness: null, materialized: [] };
+        if (rest.includes("--json")) console.log(JSON.stringify(out, null, 2));
+        else console.log("ADAPTER_NONE\nNo supported harness detected; no adapter materialized.");
+        process.exit(0);
+      }
+      const skillDirArg = flag("--skill-dir", null);
+      if (!skillDirArg) {
+        throw new Error("GO_UPDATE_ERROR: --skill-dir is required (the pinned skill directory from prove)");
+      }
+      const skillDir = resolve(repoDir, skillDirArg);
+      if (!existsSync(join(skillDir, "SKILL.md"))) {
+        throw new Error(`GO_UPDATE_ERROR: --skill-dir is not a Handoff Go skill directory: ${skillDir}`);
+      }
+      const materialized = materializeHarnessRuntime({ skillDir, repoDir, harness });
+      if (rest.includes("--json")) {
+        console.log(JSON.stringify({ harness, materialized }, null, 2));
+      } else {
+        console.log(`ADAPTER_MATERIALIZED\nHarness: ${harness}\nMaterialized: ${materialized.join(", ")}`);
+      }
+    } catch (e) {
+      fail(e);
+    }
   } else if (mode === "run") {
     // Pure launcher: establish the trusted executable, then hand the whole
     // transaction to it. It re-establishes governance provenance itself, so no
@@ -1062,7 +1263,7 @@ if (invokedDirectly) {
       fail(e);
     }
   } else {
-    console.error("usage: node update.mjs [run|prepare] [--repo-dir DIR] [--dry-run] [--json]");
+    console.error("usage: node update.mjs [run|prepare|materialize] [--repo-dir DIR] [--skill-dir DIR] [--dry-run] [--json]");
     process.exit(2);
   }
 }

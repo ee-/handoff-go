@@ -197,16 +197,24 @@ exits. The event payload is a wake signal only, never authority.
 ## Normalizing
 
 Harnesses do not share identical internals. They share compatible user
-semantics. `$handoff-go setup` is harness-neutral: it writes only the managed
-`AGENTS.md` bootstrap block and does not install or configure any coding-agent
-binary or adapter file.
+semantics. `$handoff-go setup` is harness-neutral for the managed `AGENTS.md`
+bootstrap block. It is harness-aware in exactly one bounded way: when the
+current Coder harness is reliably identified as OMP (the harness sets
+`OMPCODE=1` in its own child shell environment; a `.omp/` directory alone is
+not evidence), setup also materializes the OMP Local Watch integration bytes
+from the pinned skill, so the supported feature is ready after one restart.
+Setup never starts a watcher and never claims one is active.
 
 ### Enabling watch in a harness
 
-The universal adapter file ships in the skill package (`adapters/watch.js`).
-OMP and Pi auto-discover project extensions as `*.js` or `*.ts` in
-`.omp/extensions/` / `.pi/extensions/`, so enabling watch is a one-time native
-load step:
+For OMP, a supported harness, setup already materializes the two bytes below
+(`.omp/watch.mjs` and `.omp/extensions/handoff-go-watch.js`), byte-identical
+to the pinned skill; no manual copy is needed. The copy below documents the
+byte layout and the mechanism for harnesses that are not setup-complete (Pi
+remains `UNVERIFIED`). The universal adapter file ships in the skill package
+(`adapters/watch.js`). OMP and Pi auto-discover project extensions as `*.js` or
+`*.ts` in `.omp/extensions/` / `.pi/extensions/`, so enabling watch is a
+one-time native load step:
 
 ```sh
 mkdir -p .omp/extensions

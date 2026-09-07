@@ -2,14 +2,17 @@
 // Run: node tests/update.test.mjs
 
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   UPSTREAM,
+  HARNESS_RUNTIME,
   applyDeclarativeMigrations,
+  detectHarness,
+  materializeHarnessRuntime,
   materializePinned,
   parseManagedBlock,
   prepare,
@@ -18,6 +21,11 @@ import {
   resolveTrusted,
   updateManagedBlock,
 } from "../skills/handoff-go/update.mjs";
+
+// Tests must be deterministic regardless of the harness that runs them: a dev
+// session inside OMP exports OMPCODE=1, so unset it so `detectHarness()` default
+// is provably "not OMP". OMP-detected cases inject `harness: "omp"` explicitly.
+delete process.env.OMPCODE;
 
 const START = "<!-- handoff-go:start -->";
 const END = "<!-- handoff-go:end -->";
@@ -1267,6 +1275,283 @@ function setupEnvironment() {
     );
   } finally {
     env.cleanup();
+  }
+}
+
+// --------------------------------------------------------------------------
+// 2c. Harness-aware runtime materialization and OMP migration (Work Order #39)
+// --------------------------------------------------------------------------
+
+// detectHarness: OMP identity comes from the harness's own child shell env
+// (OMPCODE=1), never from a `.omp/` directory or other contributor-controlled
+// project state. Pi is never auto-detected (UNVERIFIED).
+{
+  assert.equal(detectHarness({ OMPCODE: "1" }), "omp", "OMPCODE=1 identifies OMP");
+  assert.equal(detectHarness({ OMPCODE: "1", PI: "1" }), "omp", "OMP wins over any other signal");
+  assert.equal(detectHarness({}), null, "no signal -> not OMP");
+  assert.equal(detectHarness({ OMPCODE: "0" }), null, "OMPCODE=0 is not OMP");
+  assert.equal(detectHarness({ OMPCODE: "true" }), null, "non-1 OMPCODE is not OMP");
+
+  // HARNESS_RUNTIME must be closed to the two supported harnesses only.
+  assert.deepEqual(
+    Object.keys(HARNESS_RUNTIME).sort(),
+    ["omp", "pi"],
+    "runtime entries cover exactly OMP and Pi",
+  );
+}
+
+// materializeHarnessRuntime: byte-identical, idempotent, all-or-nothing fail-closed.
+// Covers AC-1 (first-setup create), AC-6 (idempotence) and the Architect's
+// bounded blocker (never overwrite a divergent / non-regular existing copy, never
+// partially materialize).
+{
+  const root = mkdtempSync(join(tmpdir(), "hg-materialize-"));
+  try {
+    const skillDir = join(root, "skill");
+    const repoDir = join(root, "repo");
+    mkdirSync(join(skillDir, "adapters"), { recursive: true });
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(join(skillDir, "watch.mjs"), "WATCH_CORE\n");
+    writeFileSync(join(skillDir, "adapters/watch.js"), "WATCH_ADAPTER\n");
+
+    // First setup: missing targets are created byte-identical.
+    const first = materializeHarnessRuntime({ skillDir, repoDir, harness: "omp" });
+    assert.deepEqual(first, [".omp/watch.mjs", ".omp/extensions/handoff-go-watch.js"], "OMP pair materialized");
+    assert.equal(readFileSync(join(repoDir, ".omp/watch.mjs"), "utf8"), "WATCH_CORE\n", "core byte-identical to pinned skill");
+    assert.equal(readFileSync(join(repoDir, ".omp/extensions/handoff-go-watch.js"), "utf8"), "WATCH_ADAPTER\n", "adapter byte-identical to pinned skill");
+
+    // Re-running is an idempotent no-op (existing + identical).
+    const second = materializeHarnessRuntime({ skillDir, repoDir, harness: "omp" });
+    assert.deepEqual(second, first, "idempotent re-run reports the same paths");
+    assert.equal(readFileSync(join(repoDir, ".omp/watch.mjs"), "utf8"), "WATCH_CORE\n", "no drift on re-run");
+
+    // Pi harness uses `.pi/`, never `.omp/`.
+    const pi = materializeHarnessRuntime({ skillDir, repoDir, harness: "pi" });
+    assert.deepEqual(pi, [".pi/watch.mjs", ".pi/extensions/handoff-go-watch.js"], "Pi pair materialized");
+    assert.ok(existsSync(join(repoDir, ".omp/watch.mjs")), "OMP core still present after Pi materialization");
+    assert.equal(readFileSync(join(repoDir, ".pi/watch.mjs"), "utf8"), "WATCH_CORE\n", "Pi core byte-identical");
+
+    // An unknown harness is a caller bug: fails closed, never guesses.
+    assert.throws(() => materializeHarnessRuntime({ skillDir, repoDir, harness: "bogus" }), /unknown harness/);
+    assert.throws(() => materializeHarnessRuntime({ skillDir, repoDir, harness: null }), /unknown harness/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+
+  // All-or-nothing: existing + different target is a conflict AND no write at all
+  // (the otherwise-missing first target is NOT created).
+  {
+    const root = mkdtempSync(join(tmpdir(), "hg-mat-conflict-"));
+    try {
+      const skillDir = join(root, "skill");
+      const repoDir = join(root, "repo");
+      mkdirSync(join(skillDir, "adapters"), { recursive: true });
+      mkdirSync(repoDir, { recursive: true });
+      writeFileSync(join(skillDir, "watch.mjs"), "WATCH_CORE\n");
+      writeFileSync(join(skillDir, "adapters/watch.js"), "WATCH_ADAPTER\n");
+      // Existing divergent extension file.
+      mkdirSync(join(repoDir, ".omp/extensions"), { recursive: true });
+      writeFileSync(join(repoDir, ".omp/extensions/handoff-go-watch.js"), "TAMPERED\n");
+
+      assert.throws(
+        () => materializeHarnessRuntime({ skillDir, repoDir, harness: "omp" }),
+        (e) => {
+          assert.equal(e.code, "GO_UPDATE_CONFLICT", "divergent existing copy is a GO_UPDATE_CONFLICT");
+          assert.match(e.message, /\.omp\/extensions\/handoff-go-watch\.js.*differs/, "names the divergent path");
+          return true;
+        },
+      );
+      // All-or-nothing: the missing .omp/watch.mjs was NOT created.
+      assert.ok(!existsSync(join(repoDir, ".omp/watch.mjs")), "zero writes — missing target not created when another conflicts");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  // A symlink target is not a regular file: conflict, zero writes.
+  {
+    const root = mkdtempSync(join(tmpdir(), "hg-mat-symlink-"));
+    try {
+      const skillDir = join(root, "skill");
+      const repoDir = join(root, "repo");
+      mkdirSync(join(skillDir, "adapters"), { recursive: true });
+      mkdirSync(repoDir, { recursive: true });
+      writeFileSync(join(skillDir, "watch.mjs"), "WATCH_CORE\n");
+      writeFileSync(join(skillDir, "adapters/watch.js"), "WATCH_ADAPTER\n");
+      mkdirSync(join(repoDir, ".omp/extensions"), { recursive: true });
+      // Symlink at the core target pointing elsewhere (hostile / stale).
+      symlinkSync(join(root, "elsewhere"), join(repoDir, ".omp/watch.mjs"));
+
+      assert.throws(
+        () => materializeHarnessRuntime({ skillDir, repoDir, harness: "omp" }),
+        (e) => {
+          assert.equal(e.code, "GO_UPDATE_CONFLICT", "symlink target is a GO_UPDATE_CONFLICT");
+          assert.match(e.message, /\.omp\/watch\.mjs.*not a regular file/, "names the non-regular path");
+          return true;
+        },
+      );
+      assert.ok(!existsSync(join(repoDir, ".omp/extensions/handoff-go-watch.js")), "zero writes — no target materialized");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  // Parent `.omp` is a symlink to outside the repo: conflict, zero writes — the
+  // follow-redirect would write outside. (Architect bounded case.)
+  {
+    const root = mkdtempSync(join(tmpdir(), "hg-mat-ompsym-"));
+    try {
+      const skillDir = join(root, "skill");
+      const repoDir = join(root, "repo");
+      const outside = join(root, "outside");
+      mkdirSync(join(skillDir, "adapters"), { recursive: true });
+      mkdirSync(repoDir, { recursive: true });
+      mkdirSync(outside, { recursive: true });
+      writeFileSync(join(skillDir, "watch.mjs"), "WATCH_CORE\n");
+      writeFileSync(join(skillDir, "adapters/watch.js"), "WATCH_ADAPTER\n");
+      // `.omp` itself is a symlink to outside the repo.
+      symlinkSync(outside, join(repoDir, ".omp"));
+
+      assert.throws(
+        () => materializeHarnessRuntime({ skillDir, repoDir, harness: "omp" }),
+        (e) => {
+          assert.equal(e.code, "GO_UPDATE_CONFLICT", ".omp symlink parent is a GO_UPDATE_CONFLICT");
+          assert.match(e.message, /\.omp.*not a real directory \(symlink\)/, "names the symlinked parent");
+          return true;
+        },
+      );
+      // Nothing escapes the repo: no file appears under the symlink target.
+      assert.deepEqual(existsSync(join(outside, "watch.mjs")), false, "no file written outside the repo");
+      assert.deepEqual(existsSync(join(outside, "extensions/handoff-go-watch.js")), false, "no extension file written outside");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  // Parent `.omp/extensions` is a symlink to outside the repo: conflict, zero
+  // writes (all-or-nothing — the real `.omp/watch.mjs` must not be created either).
+  {
+    const root = mkdtempSync(join(tmpdir(), "hg-mat-extsym-"));
+    try {
+      const skillDir = join(root, "skill");
+      const repoDir = join(root, "repo");
+      const outside = join(root, "outside");
+      mkdirSync(join(skillDir, "adapters"), { recursive: true });
+      mkdirSync(repoDir, { recursive: true });
+      mkdirSync(outside, { recursive: true });
+      writeFileSync(join(skillDir, "watch.mjs"), "WATCH_CORE\n");
+      writeFileSync(join(skillDir, "adapters/watch.js"), "WATCH_ADAPTER\n");
+      mkdirSync(join(repoDir, ".omp"), { recursive: true });
+      // `.omp/extensions` is a symlink to outside the repo.
+      symlinkSync(outside, join(repoDir, ".omp/extensions"));
+
+      assert.throws(
+        () => materializeHarnessRuntime({ skillDir, repoDir, harness: "omp" }),
+        (e) => {
+          assert.equal(e.code, "GO_UPDATE_CONFLICT", ".omp/extensions symlink parent is a GO_UPDATE_CONFLICT");
+          assert.match(e.message, /\.omp\/extensions.*not a real directory \(symlink\)/, "names the symlinked extensions parent");
+          return true;
+        },
+      );
+      // All-or-nothing: real `.omp/watch.mjs` is NOT created, and nothing escapes.
+      assert.ok(!existsSync(join(repoDir, ".omp/watch.mjs")), "zero writes — .omp/watch.mjs not created when extensions parent is invalid");
+      assert.deepEqual(existsSync(join(outside, "handoff-go-watch.js")), false, "no file written outside the repo");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+}
+
+// AC-4 existing-adopter migration: `prepare` with a detected OMP harness brings
+// a missing `.omp/` integration setup-complete (create), while a non-OMP harness
+// leaves it absent.
+{
+  const env = setupEnvironment();
+  try {
+    // Worktree WITHOUT any `.omp/` files (a pre-fix OMP consumer that never
+    // manually copied, or a first adoption via an older setup).
+    const populateNoOmp = (wt) => {
+      mkdirSync(join(wt, "skills/handoff-go/adapters"), { recursive: true });
+      writeFileSync(join(wt, "AGENTS.md"), SAMPLE_AGENTS);
+      writeFileSync(join(wt, "skills/handoff-go/SKILL.md"), SKILL_FRONTMATTER);
+      writeFileSync(join(wt, "skills/handoff-go/watch.mjs"), `export const version = "1.0.0";\n`);
+      writeFileSync(join(wt, "skills/handoff-go/adapters/watch.js"), `export default function watch() {}\n`);
+      writeFileSync(join(wt, "skills/handoff-go/migrations.json"), JSON.stringify({ version: 1, operations: [] }));
+    };
+
+    // OMP detected via harness option -> missing `.omp/*` is created.
+    const fake = createRecordingFakeIO({
+      oldSkillDir: env.oldSkillDir,
+      newSkillDir: env.newSkillDir,
+      populateWorktree: populateNoOmp,
+    });
+    const ev = prepare({ repoDir: env.repoDir, io: fake, harness: "omp" });
+    assert.deepEqual(ev.runtime.created, [".omp/watch.mjs", ".omp/extensions/handoff-go-watch.js"], "OMP missing integration created");
+    // OMP is detected; only the undetected Pi entries stay absent (fail closed).
+    assert.deepEqual(ev.runtime.absent, [".pi/watch.mjs", ".pi/extensions/handoff-go-watch.js"], "Pi entries stay absent when only OMP detected");
+    assert.equal(ev.runtime.refreshed.length, 0, "nothing present to refresh");
+    assert.equal(ev.result, "PREPARED", "migration produces a prepared proposal");
+  } finally {
+    env.cleanup();
+  }
+
+  // Non-OMP / ambiguous harness: absent `.omp/*` stays absent (AC-5).
+  const env2 = setupEnvironment();
+  try {
+    const fake = createRecordingFakeIO({
+      oldSkillDir: env2.oldSkillDir,
+      newSkillDir: env2.newSkillDir,
+      populateWorktree: (wt) => {
+        mkdirSync(join(wt, "skills/handoff-go/adapters"), { recursive: true });
+        writeFileSync(join(wt, "AGENTS.md"), SAMPLE_AGENTS);
+        writeFileSync(join(wt, "skills/handoff-go/SKILL.md"), SKILL_FRONTMATTER);
+        writeFileSync(join(wt, "skills/handoff-go/watch.mjs"), `export const version = "1.0.0";\n`);
+        writeFileSync(join(wt, "skills/handoff-go/adapters/watch.js"), `export default function watch() {}\n`);
+        writeFileSync(join(wt, "skills/handoff-go/migrations.json"), JSON.stringify({ version: 1, operations: [] }));
+      },
+    });
+    // No harness option and the test process is not OMP -> null harness.
+    const ev = prepare({ repoDir: env2.repoDir, io: fake });
+    assert.deepEqual(ev.runtime.created, [], "non-OMP harness creates nothing");
+    assert.deepEqual(ev.runtime.refreshed, [], "nothing present to refresh");
+    assert.ok(ev.runtime.absent.includes(".omp/watch.mjs"), ".omp entry stays absent when harness unknown");
+  } finally {
+    env2.cleanup();
+  }
+
+  // `.omp` is a symlink to outside the worktree: the create path must fail closed
+  // (GO_UPDATE_CONFLICT), all-or-nothing, nothing written outside the worktree.
+  const env3 = setupEnvironment();
+  const outside = mkdtempSync(join(tmpdir(), "hg-prep-outside-"));
+  try {
+    const fake = createRecordingFakeIO({
+      oldSkillDir: env3.oldSkillDir,
+      newSkillDir: env3.newSkillDir,
+      populateWorktree: (wt) => {
+        mkdirSync(join(wt, "skills/handoff-go/adapters"), { recursive: true });
+        writeFileSync(join(wt, "AGENTS.md"), SAMPLE_AGENTS);
+        writeFileSync(join(wt, "skills/handoff-go/SKILL.md"), SKILL_FRONTMATTER);
+        writeFileSync(join(wt, "skills/handoff-go/watch.mjs"), `export const version = "1.0.0";\n`);
+        writeFileSync(join(wt, "skills/handoff-go/adapters/watch.js"), `export default function watch() {}\n`);
+        writeFileSync(join(wt, "skills/handoff-go/migrations.json"), JSON.stringify({ version: 1, operations: [] }));
+        // `.omp` is a symlink pointing OUTSIDE the worktree.
+        symlinkSync(outside, join(wt, ".omp"));
+      },
+    });
+    assert.throws(
+      () => prepare({ repoDir: env3.repoDir, io: fake, harness: "omp" }),
+      (e) => {
+        assert.equal(e.code, "GO_UPDATE_CONFLICT", ".omp symlink parent in the create path is a GO_UPDATE_CONFLICT");
+        assert.match(e.message, /\.omp.*not a real directory \(symlink\)/, "names the symlinked parent");
+        return true;
+      },
+    );
+    // Nothing escapes the worktree.
+    assert.deepEqual(existsSync(join(outside, "watch.mjs")), false, "no core file written outside the worktree");
+    assert.deepEqual(existsSync(join(outside, "extensions/handoff-go-watch.js")), false, "no extension file written outside the worktree");
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+    env3.cleanup();
   }
 }
 
