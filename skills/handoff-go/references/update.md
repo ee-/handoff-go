@@ -18,13 +18,20 @@ canonical `GO_UPDATE_CONFLICT` (governance/repository state) or `GO_UPDATE_ERROR
 with a non-zero exit. It never exits non-zero with zero terminal output.
 
 ```sh
-HG_TMP=""; REPO="$PWD"; STORE="${XDG_CACHE_HOME:-$HOME/.cache}/handoff-go/objects.git"; [ -d "$STORE" ] || git init --bare -q "$STORE"; \
+HG_TMP=""; REPO="$PWD"; STORE="${XDG_CACHE_HOME:-$HOME/.cache}/handoff-go/objects.git"; \
+command -v node >/dev/null 2>&1 \
+  || { printf 'GO_UPDATE_ERROR\nnode is required to run go update (not on PATH)\n'; exit 1; }; \
+if [ -d "$STORE" ]; then :; elif git init --bare -q "$STORE" 2>/dev/null; then :; else printf 'GO_UPDATE_ERROR\ncannot initialize the Handoff Go object store\n'; exit 1; fi; \
 git fetch -q origin HEAD 2>/dev/null \
   || { printf 'GO_UPDATE_ERROR\ncannot fetch the trusted default branch (git fetch origin HEAD failed); check the origin remote and network\n'; exit 1; }; \
 AGENTS_TEXT="$(git show FETCH_HEAD:AGENTS.md 2>/dev/null)" \
   || { printf 'GO_UPDATE_CONFLICT\ntrusted default branch has no readable AGENTS.md; the repository is not opted in\n'; exit 1; }; \
-REF="$(AGENTS_TEXT="$AGENTS_TEXT" node -e 'const b=process.env.AGENTS_TEXT||"",S="<!-- handoff-go:start -->",E="<!-- handoff-go:end -->";const fail=(m)=>{console.error("GO_UPDATE_CONFLICT\n"+m);process.exit(1)};const starts=b.split(S).length-1,ends=b.split(E).length-1;if(starts===0&&ends===0)fail("no Handoff Go managed block found; repository is not opted in");if(starts!==1||ends!==1)fail("expected exactly one managed block, found start="+starts+" end="+ends);const s=b.indexOf(S),e=b.indexOf(E);if(s<0||e<0||s>=e)fail("managed block markers are inverted");const inner=b.slice(s+S.length,e);const refs=[...inner.matchAll(/^[ \\t]*-[ \\t]*Immutable ref:[ \\t]*(.+)$/gm)].map(m=>m[1]);if(refs.length!==1)fail("expected exactly one Immutable ref entry in managed block, found "+refs.length);const v=refs[0],c=v.match(/`([^`]+)`/),r=(c?c[1]:v).trim().replace(/^["\x27]+|["\x27]+$/g,"").trim();if(!r)fail("empty Immutable ref in managed block");if(!/^(?:[0-9a-f]{40}|[A-Za-z0-9][A-Za-z0-9._\/-]*)$/.test(r))fail("malformed Immutable ref in managed block: "+r);if(/^(main|master|develop|trunk|HEAD)$/i.test(r))fail("refusing floating governance ref: "+r);console.log(r)')" \
-  || exit 1; \
+REF_OR_ERR="$(AGENTS_TEXT="$AGENTS_TEXT" node -e 'const b=process.env.AGENTS_TEXT||"",S="<!-- handoff-go:start -->",E="<!-- handoff-go:end -->";const c=(m)=>{console.log("GO_UPDATE_CONFLICT\n"+m);process.exit(1)};const st=b.split(S).length-1,en=b.split(E).length-1;if(st===0&&en===0)c("no Handoff Go managed block found; repository is not opted in");if(st!==1||en!==1)c("expected exactly one managed block, found start="+st+" end="+en);const s=b.indexOf(S),e=b.indexOf(E);if(s<0||e<0||s>=e)c("managed block markers are inverted");const inner=b.slice(s+S.length,e);const refs=[...inner.matchAll(/^[ \t]*-[ \t]*Immutable ref:[ \t]*(.+)$/gm)].map(m=>m[1]);if(refs.length!==1)c("expected exactly one Immutable ref entry in managed block, found "+refs.length);const v=refs[0],co=v.match(/`([^`]+)`/),r=(co?co[1]:v).trim().replace(/^["\x27]+|["\x27]+$/g,"").trim();if(!r)c("empty Immutable ref in managed block");if(!/^(?:[0-9a-f]{40}|[A-Za-z0-9][A-Za-z0-9._\/-]*)$/.test(r))c("malformed Immutable ref in managed block: "+r);if(/^(main|master|develop|trunk|HEAD)$/i.test(r))c("refusing floating governance ref: "+r);console.log(r)' 2>/dev/null)"; NRC=$?; \
+if [ "$NRC" -ne 0 ]; then \
+  if printf '%s' "$REF_OR_ERR" | grep -q '^GO_UPDATE_'; then printf '%s\n' "$REF_OR_ERR"; else printf 'GO_UPDATE_ERROR\nnode could not run the Handoff Go ref extractor\n'; fi; \
+  exit 1; \
+fi; \
+REF="$REF_OR_ERR"; \
 git -C "$STORE" fetch -q --depth 1 https://github.com/ee-/handoff-go.git "$REF" 2>/dev/null \
   || { printf 'GO_UPDATE_ERROR\ncannot materialize pinned Handoff Go %s from the fixed upstream\n' "$REF"; exit 1; }; \
 HG_TMP="$(mktemp -d)" || { printf 'GO_UPDATE_ERROR\ncannot create a temporary updater directory\n'; exit 1; }; \
@@ -32,6 +39,8 @@ git -C "$STORE" archive --format=tar -o "$HG_TMP/tree.tar" "$REF" skills/handoff
   || { printf 'GO_UPDATE_ERROR\npinned Handoff Go %s carries no updater tree\n' "$REF"; rm -rf "$HG_TMP"; exit 1; }; \
 tar -xf "$HG_TMP/tree.tar" -C "$HG_TMP" 2>/dev/null \
   || { printf 'GO_UPDATE_ERROR\ncannot extract the pinned Handoff Go updater tree\n'; rm -rf "$HG_TMP"; exit 1; }; \
+node --check "$HG_TMP/skills/handoff-go/update.mjs" 2>/dev/null \
+  || { printf 'GO_UPDATE_ERROR\npinned Handoff Go updater is not runnable (syntax/load failure)\n'; rm -rf "$HG_TMP"; exit 1; }; \
 node "$HG_TMP/skills/handoff-go/update.mjs" prepare --repo-dir "$REPO"; RC=$?; [ -n "$HG_TMP" ] && rm -rf "$HG_TMP"; exit $RC
 ```
 
@@ -43,26 +52,40 @@ contain malicious top-level code. The bootstrap never falls back to the working
 tree or a local-branch `AGENTS.md`: only the trusted remote default branch read
 via `FETCH_HEAD` supplies the pin.
 
-1. `git fetch -q origin HEAD` fetches the remote repository's default branch into
-   `FETCH_HEAD`, independent of the current checkout branch or working tree. On
-   failure it emits `GO_UPDATE_ERROR`.
-2. The remote default branch's `AGENTS.md` is read from `FETCH_HEAD`. A missing
+The bootstrap owns the single, bounded failure boundary before `prepare` starts:
+each expected pre-updater failure emits exactly one canonical
+`GO_UPDATE_CONFLICT` / `GO_UPDATE_ERROR` outcome plus one actionable reason, a
+non-zero exit, and no stray tooling diagnostics (git/node/tar stderr is
+suppressed). Once `prepare` successfully starts, the bootstrap stops classifying
+and preserves its output and exit status verbatim.
+
+1. `node` must be present (`command -v node`); absence emits `GO_UPDATE_ERROR`.
+2. The object store is initialized with a guarded `git init`; an init failure
+   emits `GO_UPDATE_ERROR`.
+3. `git fetch -q origin HEAD` fetches the remote default branch into `FETCH_HEAD`,
+   independent of the current checkout branch or working tree. On failure it
+   emits `GO_UPDATE_ERROR`.
+4. The remote default branch's `AGENTS.md` is read from `FETCH_HEAD`. A missing
    or unreadable `AGENTS.md` emits `GO_UPDATE_CONFLICT`.
-3. The stable managed-block `Immutable ref` is extracted and validated (only a
+5. The stable managed-block `Immutable ref` is extracted and validated (only a
    commit SHA or plain tag passes). Missing, duplicated, malformed, or floating
-   refs emit `GO_UPDATE_CONFLICT`. This mirrors the canonical
-   `update.mjs` `classifyBootstrapRef` and is deliberately narrower than the full
-   `parseManagedBlock`, so a launcher reads a newer pin without reinterpreting
-   new schema.
-4. The content-addressed git object store (`${XDG_CACHE_HOME:-~/.cache}/handoff-go/objects.git`)
-   materializes the exact pinned commit from `https://github.com/ee-/handoff-go.git`
-   if not already cached; any fetch failure emits `GO_UPDATE_ERROR`.
-5. `git archive` extracts `update.mjs` directly from the immutable commit to a
-   fresh temporary directory; an absent tree or extraction failure emits
+   refs emit `GO_UPDATE_CONFLICT`. A `node -e` that cannot run the extractor
+   emits `GO_UPDATE_ERROR` (the extractor's own canonical conflicts pass through
+   unmodified). This mirrors `update.mjs` `classifyBootstrapRef` and is
+   deliberately narrower than `parseManagedBlock`, so a launcher reads a newer
+   pin without reinterpreting new schema.
+6. The content-addressed git object store materializes the exact pinned commit
+   from `https://github.com/ee-/handoff-go.git`; any fetch failure emits
    `GO_UPDATE_ERROR`.
-6. Node executes that materialized updater's `prepare` command against the target
-   repository (`--repo-dir "$REPO"`), surfacing its terminal result verbatim.
-7. The temporary extraction is cleaned up only if created by this invocation
+7. `git archive` / `tar` extract the updater tree to a fresh temporary directory;
+   an absent tree or extraction failure emits `GO_UPDATE_ERROR`.
+8. `node --check` verifies the materialized `update.mjs` is runnable; a syntax or
+   load failure emits `GO_UPDATE_ERROR` (corrupted pinned updater), not a raw
+   Node error.
+9. Node executes the materialized updater's `prepare` command against the target
+   repository (`--repo-dir "$REPO"`). From here the bootstrap stops classifying:
+   `prepare`'s output and exit status pass through verbatim.
+10. The temporary extraction is cleaned up only if created by this invocation
    (`[ -n "$HG_TMP" ] && rm -rf "$HG_TMP"`), preserving the command's original
    exit status without touching caller-defined environment variables.
 

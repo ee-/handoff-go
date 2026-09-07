@@ -72,8 +72,8 @@ function initConsumer(agentsText) {
 }
 
 // Make a local stand-in for the fixed upstream holding exactly one pinned commit
-// at `sha` with a stub `prepare`. Returns { bare, sha }.
-function initFixedUpstream() {
+// at `sha` with a stub `prepare` (or a custom `updateSource`). Returns { bare, sha }.
+function initFixedUpstream(updateSource) {
   const up = mkdtempSync(join(tmpdir(), "hg-boot-upstream-"));
   const work = join(up, "w");
   const bare = join(up, "u.git");
@@ -83,7 +83,7 @@ function initFixedUpstream() {
   git(work, "config", "user.name", "t");
   writeFileSync(
     join(work, "skills/handoff-go/update.mjs"),
-    'if (process.argv[2] === "prepare") { console.log("STUB_PREPARE_RAN"); process.exit(0); }\n',
+    updateSource || 'if (process.argv[2] === "prepare") { console.log("STUB_PREPARE_RAN"); process.exit(0); }\n',
   );
   writeFileSync(join(work, "VERSION"), "1.0.0\n");
   git(work, "add", "-A");
@@ -106,8 +106,10 @@ function prepStore(cacheHome, upstreamBare) {
   return store;
 }
 
+const BASH = execFileSync("bash", ["-lc", "command -v bash"], { encoding: "utf8" }).trim() || "/bin/bash";
+
 function runCommand(repo, { cacheHome, env = {} } = {}) {
-  const res = spawnSync("bash", ["-c", CMD], {
+  const res = spawnSync(BASH, ["-c", CMD], {
     cwd: repo,
     encoding: "utf8",
     env: { ...process.env, XDG_CACHE_HOME: cacheHome, ...env },
@@ -121,10 +123,18 @@ function validBlock(ref) {
 }
 
 function expectOutcome(res, token, re) {
-  assert.ok(res.status !== 0, `non-zero exit (got ${res.status})`);
+  assert.ok(res.status !== 0, `non-zero exit (got ${res.status}): ${res.stdout}\n${res.stderr}`);
   const combined = `${res.stdout}\n${res.stderr}`;
   assert.ok(combined.includes(token), `emits ${token}: ${combined}`);
   assert.ok(re.test(combined), `emits one actionable reason (${re}): ${combined}`);
+  // Exactly ONE canonical outcome, and no stray tooling diagnostics. The bootstrap
+  // owns its failure reporting; it must not leak git/node/tar errors.
+  const tokens = combined.match(/GO_UPDATE_(CONFLICT|ERROR)/g) || [];
+  assert.equal(tokens.length, 1, `exactly one canonical outcome (got ${tokens.length}): ${combined}`);
+  assert.ok(
+    !/fatal:|command not found|SyntaxError|Node\.js v|npm ERR|cannot open .*No such file|usr\/bin\/node|zsh:|sh: /i.test(combined),
+    `no stray tooling diagnostics: ${combined}`,
+  );
 }
 
 // --------------------------------------------------------------------------
@@ -224,6 +234,47 @@ function expectOutcome(res, token, re) {
 }
 
 // --------------------------------------------------------------------------
+// 4b. A pinned updater that cannot start (syntax corruption) emits exactly one
+//     GO_UPDATE_ERROR with no stray Node diagnostics; prepare is NOT reached.
+// --------------------------------------------------------------------------
+{
+  const cache = mkdtempSync(join(tmpdir(), "hg-boot-cache-"));
+  try {
+    const { bare, sha } = initFixedUpstream("const this is broken syntax = ;\n");
+    prepStore(cache, bare);
+    const { root, repo } = initConsumer(validBlock(sha));
+    const res = runCommand(repo, { cacheHome: cache });
+    expectOutcome(res, "GO_UPDATE_ERROR", /pinned Handoff Go updater is not runnable/);
+    assert.ok(!res.stdout.includes("STUB_PREPARE_RAN") && !res.stderr.includes("STUB_PREPARE_RAN"), "prepare is never invoked");
+  } finally {
+    rmSync(cache, { recursive: true, force: true });
+  }
+}
+
+// --------------------------------------------------------------------------
+// 4c. `node` absent: the bootstrap emits exactly one GO_UPDATE_ERROR (the
+//     `command -v node` guard) instead of a raw "command not found".
+// --------------------------------------------------------------------------
+{
+  const cache = mkdtempSync(join(tmpdir(), "hg-boot-cache-"));
+  try {
+    const { root, repo } = initConsumer(validBlock("d".repeat(40)));
+    // Build a PATH that has the tools the bootstrap needs but NOT node.
+    const bin = mkdtempSync(join(tmpdir(), "hg-boot-bin-"));
+    const real = (cmd) => execFileSync(BASH, ["-lc", `command -v ${cmd}`], { encoding: "utf8" }).trim();
+    for (const cmd of ["git", "tar", "grep", "mktemp"]) {
+      const p = real(cmd);
+      if (p) execFileSync("ln", ["-s", p, join(bin, cmd)]);
+    }
+    const res = runCommand(repo, { cacheHome: cache, env: { PATH: bin } });
+    expectOutcome(res, "GO_UPDATE_ERROR", /node is required to run go update/);
+    assert.ok(!/command not found/.test(res.stderr), "no raw command-not-found leaked");
+  } finally {
+    rmSync(cache, { recursive: true, force: true });
+  }
+}
+
+// --------------------------------------------------------------------------
 // 5. AC-5: happy path unchanged — a valid pin materializes the pinned updater
 //    and invokes `prepare` (stub prints the marker).
 // --------------------------------------------------------------------------
@@ -236,6 +287,7 @@ function expectOutcome(res, token, re) {
     const res = runCommand(repo, { cacheHome: cache });
     assert.equal(res.status, 0, `happy path exits 0 (got ${res.status}): ${res.stdout}\n${res.stderr}`);
     assert.ok(res.stdout.includes("STUB_PREPARE_RAN"), "materialized pinned updater prepare invoked");
+    assert.ok(!/GO_UPDATE_(CONFLICT|ERROR)/.test(res.stdout), "happy path emits no canonical outcome wrapper");
   } finally {
     rmSync(cache, { recursive: true, force: true });
   }
