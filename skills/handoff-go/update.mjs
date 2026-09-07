@@ -418,6 +418,11 @@ export const productionIO = {
   gh(dir, args) {
     return run("gh", args, { cwd: dir }).trim();
   },
+  // `ssh -G` expands local client configuration only: no network, no
+  // authentication, no remote trust.
+  ssh(host) {
+    return run("ssh", ["-G", host], { stdio: ["ignore", "pipe", "ignore"] });
+  },
   extractSkill(cache, sha, tmps) {
     const dir = mkdtempSync(join(tmpdir(), "hg-tree-"));
     tmps.push(dir);
@@ -519,18 +524,100 @@ const DISCOVERY = `query($owner:String!,$name:String!){repository(owner:$owner,n
   `pullRequests(states:OPEN,first:100){nodes{number url headRefName baseRefName isCrossRepository}pageInfo{hasNextPage}}}}`;
 
 // Repository identity comes from remote metadata, never from tracked content.
-function repoSlug(repoDir, io = productionIO) {
+// GitHub's SSH endpoints, by exact resolved host name: an alias string alone
+// is never GitHub; only the transport's own resolved hostname can say so.
+const GH_SSH_HOSTS = new Set(["github.com", "ssh.github.com"]);
+const SLUG_SHAPE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
+function sshEndpoint(url) {
+  // Parse `git@<host>:owner/repo(.git)` and `ssh://git@<host>/owner/repo(.git)`
+  // only. GitHub's SSH transport always uses user `git`; requiring the user
+  // also rejects Windows drive-letter paths (`C:/x/y`) that otherwise
+  // resemble the scp-like form.
+  let m = /^ssh:\/\/git@([A-Za-z0-9._-]+)(?::\d+)?\/([^/\s]+)\/([^/\s]+?)(?:\.git)?$/.exec(url);
+  if (m) return slugEndpoint(m[1], m[2], m[3]);
+  m = /^git@([A-Za-z0-9._-]+):([^/\s:]+)\/([^/\s:]+?)(?:\.git)?$/.exec(url);
+  if (m) return slugEndpoint(m[1], m[2], m[3]);
+  return null;
+}
+
+function slugEndpoint(host, owner, name) {
+  return SLUG_SHAPE.test(`${owner}/${name}`) ? { host, owner, name } : null;
+}
+
+// Resolve where the ssh host actually terminates. `ssh -G` emits effective
+// local OpenSSH configuration for a host: no network, no authentication. An
+// alias string alone is never authority — only a resolved github.com endpoint
+// is. A missing or non-OpenSSH client simply fails the check (fail closed).
+function ghSshHostResolved(io, host) {
+  let out;
+  try {
+    out = io.ssh(host);
+  } catch {
+    return false;
+  }
+  const m = /^hostname[ \t]+(\S+)[ \t]*$/im.exec(String(out));
+  return m !== null && GH_SSH_HOSTS.has(m[1].toLowerCase());
+}
+
+// `ssh -G` proves only the stock OpenSSH transport. Git can be configured to
+// run a different command (GIT_SSH, GIT_SSH_COMMAND, core.sshCommand,
+// ssh.variant); when any is present the proof would not describe what git
+// actually executes, so the alias path fails closed instead of parsing or
+// emulating the alternate transport.
+function defaultSshTransport(repoDir, io) {
+  if (process.env.GIT_SSH || process.env.GIT_SSH_COMMAND) return false;
+  for (const key of ["core.sshCommand", "ssh.variant"]) {
+    let value;
+    try {
+      value = io.git(repoDir, "config", "--get", key);
+    } catch (e) {
+      // The ordinary absent-key answer from `git config --get` is exit 1 with
+      // no fatal output. Anything else — unreadable/unparseable config (which
+      // still says "fatal: bad config line" even when it exits 1), a broken
+      // repo, a git failure — cannot prove no alternate transport exists, so
+      // the alias path fails closed here: before `ssh -G`, discovery, or
+      // mutation.
+      if (e?.status === 1 && !/fatal/i.test(String(e.stderr || ""))) continue;
+      throw errored(
+        `cannot verify git's SSH transport: the local config probe for ${key} failed (${firstLine(e)}); set GH_REPO=owner/name to declare the canonical GitHub identity`,
+      );
+    }
+    if (value) return false;
+  }
+  return true;
+}
+
+export function repoSlug(repoDir, io = productionIO) {
   const env = (process.env.GH_REPO || "").trim();
   if (/^[^/\s]+\/[^/\s]+$/.test(env)) return env.split("/");
   let url;
   try {
     url = io.git(repoDir, "remote", "get-url", "origin");
   } catch {
-    throw errored("no origin remote, so trusted repository provenance cannot be established");
+    throw errored(
+      "no origin remote, so trusted repository provenance cannot be established; set GH_REPO=owner/name to declare the canonical GitHub identity",
+    );
   }
-  const m = url.match(/github\.com[:/]+([^/]+)\/(.+?)(?:\.git)?$/);
-  if (!m) throw errored(`cannot derive a GitHub owner/name from origin ${url}`);
-  return [m[1], m[2]];
+  // Standard GitHub remotes, host-anchored (the host must BE github, not
+  // merely contain it): exact https://github.com and the exact SSH endpoints
+  // from sshEndpoint. Zero extra effects on this path, as before.
+  const https = url.match(/^https:\/\/(?:[^@/\s]+@)?github\.com\/([^/\s]+)\/([^/\s]+?)(?:\.git)?$/);
+  if (https && SLUG_SHAPE.test(`${https[1]}/${https[2]}`)) return [https[1], https[2]];
+  const ssh = sshEndpoint(url);
+  if (ssh && GH_SSH_HOSTS.has(ssh.host.toLowerCase())) return [ssh.owner, ssh.name];
+  // A legitimate multi-account SSH `Host` alias for GitHub does not contain
+  // the literal github.com: accept the alias's owner/name only when git uses
+  // its default OpenSSH transport and that client resolves the alias itself
+  // to github.com. Anything else — including a host that merely spells
+  // `github.com` inside a longer name — falls through and fails closed
+  // before discovery or mutation.
+  if (ssh && defaultSshTransport(repoDir, io) && ghSshHostResolved(io, ssh.host)) {
+    return [ssh.owner, ssh.name];
+  }
+  throw errored(
+    `cannot derive a GitHub owner/name from origin ${url}; this fails closed for non-GitHub hosts, unresolved SSH aliases, and alternate git SSH transports (GIT_SSH/GIT_SSH_COMMAND/core.sshCommand); set GH_REPO=owner/name to declare the canonical GitHub identity`,
+  );
 }
 
 function discover(repoDir, io = productionIO) {

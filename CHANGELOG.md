@@ -4,6 +4,23 @@
 
 Nothing released yet: no tag, no GitHub Release. Everything below is pending.
 
+Repository identity across GitHub SSH host aliases (issue #35):
+
+- `go update` accepts a legitimate multi-account `git@<alias>:owner/repo.git`
+  origin only when git uses its default OpenSSH transport (no `GIT_SSH`,
+  `GIT_SSH_COMMAND`, `core.sshCommand`, or `ssh.variant`) and `ssh -G`
+  (local OpenSSH config expansion; no network or authentication) resolves
+  the alias's own hostname to `github.com`/`ssh.github.com`;
+- an alias string never becomes GitHub by itself — arbitrary hosts, unconfigured
+  aliases, non-`git` users, non-SSH forms, and alternate SSH transports keep
+  failing closed before any GitHub discovery or mutation, now with
+  `GH_REPO=owner/name` named as the concrete remediation;
+- standard HTTPS/SSH origins whose host is exactly `github.com`/`ssh.github.com`
+  and the explicit `GH_REPO` override resolve exactly as before and consume no
+  new effects; substring hosts (`evilgithub.com`) no longer enter the GitHub
+  fast path and fail closed through the bounded alias proof; identity gate,
+  trusted discovery, and proposal authority unchanged; no new dependency.
+
 Local Watch first-time activation (issue #33):
 
 - truthful activation lifecycle: on-disk adapter files, runtime-loaded

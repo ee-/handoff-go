@@ -108,6 +108,21 @@ export function createRecordingFakeIO(options = {}) {
       let res = "";
       if (cmd === "remote" && args[1] === "get-url") {
         res = options.originUrl || "https://github.com/ee-/handoff-go.git";
+      } else if (cmd === "config") {
+        // Real `git config --get` semantics: exit 0 with the value when set;
+        // silent exit 1 when simply absent; exit 1 + "fatal:" stderr when the
+        // config itself is unparseable (modeled via configFatal).
+        const key = args[args.length - 1];
+        const val = key === "core.sshCommand" ? options.coreSshCommand
+          : key === "ssh.variant" ? options.sshVariant : undefined;
+        if (val) res = val;
+        else {
+          const err = new Error(options.configFatal ? "fatal: bad config line 11 in file .git/config" : "config absent");
+          err.status = 1;
+          err.stderr = options.configFatal ? "fatal: bad config line 11 in file .git/config" : "";
+          if (options.configFatal128) { err.status = 128; err.stderr = "fatal: bad config"; }
+          throw err;
+        }
       } else if (cmd === "ls-remote") {
         if (options.lsRemoteError) throw options.lsRemoteError;
         res = (options.upstreamHead !== undefined ? options.upstreamHead : NEW_REF) + "\tHEAD";
@@ -160,6 +175,15 @@ export function createRecordingFakeIO(options = {}) {
       } else if (cmd === "rev-parse" && args[1] === "HEAD") {
         res = options.commitSha || COMMIT_SHA;
       }
+      entry.result = res;
+      return res;
+    },
+    ssh(host) {
+      const entry = { type: "ssh", dir: "", args: [host], result: null };
+      calls.push(entry);
+      trace.push(["ssh", "", [host]]);
+      if (options.sshError) throw options.sshError;
+      const res = options.sshResolvedHost !== undefined ? `user git\nhostname ${options.sshResolvedHost}\nport 22\n` : "";
       entry.result = res;
       return res;
     },
@@ -945,6 +969,305 @@ function setupEnvironment() {
     true,
     "verbose up-to-date output includes diagnostic fields",
   );
+}
+
+// --------------------------------------------------------------------------
+// 2b. Repository identity resolution across SSH host aliases (issue #35)
+// --------------------------------------------------------------------------
+
+{
+  // AC-1: standard SSH origin resolves exactly as before — direct host match,
+  // no identity effects beyond reading the remote.
+  const env = setupEnvironment();
+  try {
+    const fake = createRecordingFakeIO({
+      originUrl: "git@github.com:ee-/handoff-go.git",
+      oldSkillDir: env.oldSkillDir,
+      newSkillDir: env.newSkillDir,
+      populateWorktree: env.populateWorktree,
+    });
+    const ev = prepare({ repoDir: env.repoDir, io: fake });
+    assert.equal(ev.result, "PREPARED");
+    assert.equal(ev.provenance.repository, "ee-/handoff-go", "canonical identity from standard SSH origin");
+    assert.equal(fake.calls.filter((t) => t.type === "ssh").length, 0, "direct github.com SSH does not consult ssh config");
+    assert.equal(fake.calls.filter((c) => c.type === "git" && c.args[0] === "config").length, 0, "direct match does not probe transports");
+  } finally {
+    env.cleanup();
+  }
+}
+{
+  // AC-2/AC-7: generic SSH `Host` alias — the alias string alone never passes;
+  // identity resolves because the transport's own ssh endpoint resolves to
+  // github.com. Normal trusted discovery and proposal flow then continue.
+  const env = setupEnvironment();
+  try {
+    const fake = createRecordingFakeIO({
+      originUrl: "git@gh-work:acme/widgets.git",
+      sshResolvedHost: "github.com",
+      oldSkillDir: env.oldSkillDir,
+      newSkillDir: env.newSkillDir,
+      populateWorktree: env.populateWorktree,
+    });
+    const ev = prepare({ repoDir: env.repoDir, io: fake });
+    assert.equal(ev.result, "PREPARED", "alias-shaped origin no longer fails identity resolution");
+    assert.equal(ev.provenance.repository, "acme/widgets");
+    const gh = fake.calls.find((c) => c.type === "gh");
+    assert.ok(gh.args.includes("owner=acme") && gh.args.includes("name=widgets"), "discovery queries the alias's canonical repo");
+    const sshCall = fake.calls.find((c) => c.type === "ssh");
+    assert.deepEqual(sshCall.args, ["gh-work"], "the alias itself, not github.com, is what ssh resolves");
+  } finally {
+    env.cleanup();
+  }
+}
+
+{
+  // AC-3: arbitrary SSH hosts fail closed BEFORE any GitHub discovery or
+  // mutation; the error names the concrete remediation (AC-4).
+  for (const [label, opts] of [
+    ["host resolves elsewhere", { originUrl: "git@corp-git.invalid:acme/widgets.git", sshResolvedHost: "gitlab.example" }],
+    ["host does not resolve at all", { originUrl: "git@corp-git.invalid:acme/widgets.git", sshError: new Error("ssh: Could not resolve hostname") }],
+    ["ssh client emits no hostname", { originUrl: "git@corp-git.invalid:acme/widgets.git" }],
+    ["non-git ssh user", { originUrl: "deploy@gh-work:acme/widgets.git", sshResolvedHost: "github.com" }],
+    ["not an ssh form", { originUrl: "/srv/local-checkout", sshResolvedHost: "github.com" }],
+  ]) {
+    const env = setupEnvironment();
+    const fake = createRecordingFakeIO({ ...opts, oldSkillDir: env.oldSkillDir, newSkillDir: env.newSkillDir });
+    try {
+      assert.throws(
+        () => prepare({ repoDir: env.repoDir, io: fake }),
+        (e) => {
+          assert.equal(e.code, "GO_UPDATE_ERROR", label);
+          assert.match(e.message, /cannot derive a GitHub owner\/name/, label);
+          assert.match(e.message, /GH_REPO=owner\/name/, `${label}: remediation is concrete`);
+          return true;
+        },
+        label,
+      );
+      assert.equal(fake.calls.some((c) => c.type === "gh"), false, `${label}: no GitHub discovery`);
+      assert.equal(fake.calls.some((c) => c.args?.includes("worktree")), false, `${label}: no mutation effects`);
+    } finally {
+      env.cleanup();
+    }
+  }
+}
+
+{
+  // AC-3 (review blocker): the standard fast path recognizes only the EXACT
+  // GitHub host — hosts that merely contain "github.com" must not shortcut it.
+  // The SSH negative must fall through INTO the bounded alias proof (ssh is
+  // consulted for the foreign host, then fails closed), never return identity.
+  const envA = setupEnvironment();
+  try {
+    const fake = createRecordingFakeIO({
+      originUrl: "git@evilgithub.com:acme/widgets.git",
+      oldSkillDir: envA.oldSkillDir,
+      newSkillDir: envA.newSkillDir,
+    });
+    assert.throws(
+      () => prepare({ repoDir: envA.repoDir, io: fake }),
+      (e) => {
+        assert.equal(e.code, "GO_UPDATE_ERROR");
+        assert.match(e.message, /cannot derive a GitHub owner\/name/);
+        return true;
+      },
+      "evilgithub.com SSH is not the GitHub fast path",
+    );
+    const sshCall = fake.calls.find((c) => c.type === "ssh");
+    assert.ok(sshCall && sshCall.args[0] === "evilgithub.com", "fell through to the alias proof, which then failed closed");
+    assert.equal(fake.calls.some((c) => c.type === "gh"), false, "no GitHub discovery");
+  } finally {
+    envA.cleanup();
+  }
+  // HTTPS equivalents with substring hosts must not match the anchored https
+  // form either; they are not sshEndpoint forms, so identity fails directly.
+  for (const bad of [
+    "https://evilgithub.com/acme/widgets.git",
+    "https://github.com.evil.invalid/acme/widgets.git",
+    "ssh://git@evil-github.com:22/acme/widgets.git",
+  ]) {
+    const env = setupEnvironment();
+    try {
+      const fake = createRecordingFakeIO({ originUrl: bad, oldSkillDir: env.oldSkillDir, newSkillDir: env.newSkillDir });
+      assert.throws(() => prepare({ repoDir: env.repoDir, io: fake }), /cannot derive a GitHub owner\/name/, bad);
+      assert.equal(fake.calls.some((c) => c.type === "gh"), false, `${bad}: no GitHub discovery`);
+    } finally {
+      env.cleanup();
+    }
+  }
+  // Standard positive regressions still short-circuit with zero extra effects.
+  for (const [ok, origin] of [
+    ["https", "https://github.com/ee-/handoff-go.git"],
+    ["https userinfo", "https://oauth2@github.com/ee-/handoff-go.git"],
+    ["ssh scp", "git@github.com:ee-/handoff-go.git"],
+    ["ssh url", "ssh://git@github.com/ee-/handoff-go.git"],
+    ["ssh.github.com", "git@ssh.github.com:ee-/handoff-go.git"],
+  ]) {
+    const env = setupEnvironment();
+    try {
+      const fake = createRecordingFakeIO({
+        originUrl: origin,
+        oldSkillDir: env.oldSkillDir,
+        newSkillDir: env.newSkillDir,
+        populateWorktree: env.populateWorktree,
+      });
+      const ev = prepare({ repoDir: env.repoDir, io: fake });
+      assert.equal(ev.provenance.repository, "ee-/handoff-go", `${ok} fast path preserved`);
+      assert.equal(fake.calls.filter((c) => c.type === "ssh").length, 0, `${ok}: no ssh consultation`);
+      assert.equal(fake.calls.filter((c) => c.type === "git" && c.args[0] === "config").length, 0, `${ok}: no transport probes`);
+    } finally {
+      env.cleanup();
+    }
+  }
+}
+
+{
+  // BLOCKER 2 guard: when git's SSH transport is not the default OpenSSH
+  // client, the bare `ssh -G` proof would describe a command git never runs.
+  // The alias path must fail closed — before consulting ssh at all — even
+  // when the alias would otherwise resolve to github.com.
+  for (const [label, extra] of [
+    ["core.sshCommand", { coreSshCommand: "plink -ssh -agent" }],
+    ["ssh.variant", { sshVariant: "plink" }],
+    ["GIT_SSH_COMMAND env", {}],
+    ["GIT_SSH env", {}],
+  ]) {
+    const env = setupEnvironment();
+    const fake = createRecordingFakeIO({
+      originUrl: "git@gh-work:acme/widgets.git",
+      sshResolvedHost: "github.com", // would succeed if consulted — it must not be
+      oldSkillDir: env.oldSkillDir,
+      newSkillDir: env.newSkillDir,
+      ...extra,
+    });
+    try {
+      if (label === "GIT_SSH_COMMAND env") process.env.GIT_SSH_COMMAND = "plink -ssh";
+      if (label === "GIT_SSH env") process.env.GIT_SSH = "/usr/bin/plink";
+      assert.throws(
+        () => prepare({ repoDir: env.repoDir, io: fake }),
+        (e) => {
+          assert.equal(e.code, "GO_UPDATE_ERROR", label);
+          assert.match(e.message, /cannot derive a GitHub owner\/name/, label);
+          assert.match(e.message, /GH_REPO=owner\/name/, label);
+          return true;
+        },
+        label,
+      );
+      assert.equal(fake.calls.some((c) => c.type === "ssh"), false, `${label}: ssh -G never consulted under an alternate transport`);
+      assert.equal(fake.calls.some((c) => c.type === "gh"), false, `${label}: no GitHub discovery`);
+    } finally {
+      delete process.env.GIT_SSH_COMMAND;
+      delete process.env.GIT_SSH;
+      env.cleanup();
+    }
+  }
+}
+{
+  // Review blocker (AC-3): an ABNORMAL config-probe failure is not proof of
+  // "no alternate transport". Only the silent exit-1 absent answer may pass;
+  // fatal/unreadable results must fail closed BEFORE ssh -G, gh, or mutation —
+  // even when the alias would otherwise resolve to github.com.
+  for (const [label, opts] of [
+    ["exit 1 + fatal stderr (bad config line)", { configFatal: true }],
+    ["exit 128 (fatal)", { configFatal128: true }],
+  ]) {
+    const env = setupEnvironment();
+    const fake = createRecordingFakeIO({
+      originUrl: "git@gh-work:acme/widgets.git",
+      sshResolvedHost: "github.com", // would succeed if consulted — it must not be
+      oldSkillDir: env.oldSkillDir,
+      newSkillDir: env.newSkillDir,
+      ...opts,
+    });
+    try {
+      assert.throws(
+        () => prepare({ repoDir: env.repoDir, io: fake }),
+        (e) => {
+          assert.equal(e.code, "GO_UPDATE_ERROR", label);
+          assert.match(e.message, /cannot verify git's SSH transport/, label);
+          assert.match(e.message, /GH_REPO=owner\/name/, `${label}: remediation concrete`);
+          return true;
+        },
+        label,
+      );
+      assert.equal(fake.calls.some((c) => c.type === "ssh"), false, `${label}: ssh -G not consulted`);
+      assert.equal(fake.calls.some((c) => c.type === "gh"), false, `${label}: no GitHub discovery`);
+      assert.equal(fake.calls.some((c) => c.args?.includes("worktree")), false, `${label}: no mutation`);
+    } finally {
+      env.cleanup();
+    }
+  }
+  // Contrast: the ordinary silent absent-key exit still proceeds to the alias
+  // proof (covered implicitly by the AC-2 happy-alias test above, which relies
+  // on this same fake semantics and resolves).
+}
+
+
+{
+  // AC-4: GH_REPO stays the explicit override — even ahead of a valid origin —
+  // and an unusable one falls through to origin resolution unchanged.
+  const env = setupEnvironment();
+  try {
+    process.env.GH_REPO = "env/override";
+    try {
+      const fake = createRecordingFakeIO({
+        originUrl: "git@gh-work:acme/widgets.git", // unresolvable without ssh config
+        oldSkillDir: env.oldSkillDir,
+        newSkillDir: env.newSkillDir,
+        populateWorktree: env.populateWorktree,
+      });
+      const ev = prepare({ repoDir: env.repoDir, io: fake });
+      assert.equal(ev.result, "PREPARED");
+      assert.equal(ev.provenance.repository, "env/override", "explicit override wins");
+      assert.equal(fake.calls.some((c) => c.type === "ssh"), false, "override skips transport/ssh effects");
+    } finally {
+      delete process.env.GH_REPO;
+    }
+    // Malformed GH_REPO is not authority; origin path still runs.
+    process.env.GH_REPO = "not-a-slug";
+    try {
+      const fake = createRecordingFakeIO({
+        originUrl: "https://github.com/ee-/handoff-go.git",
+        oldSkillDir: env.oldSkillDir,
+        newSkillDir: env.newSkillDir,
+        populateWorktree: env.populateWorktree,
+      });
+      const ev = prepare({ repoDir: env.repoDir, io: fake });
+      assert.equal(ev.provenance.repository, "ee-/handoff-go", "malformed GH_REPO falls through to origin");
+    } finally {
+      delete process.env.GH_REPO;
+    }
+  } finally {
+    env.cleanup();
+  }
+}
+
+{
+  // AC-4: missing origin is also a bounded error with the concrete remediation.
+  const env = setupEnvironment();
+  try {
+    const fake = createRecordingFakeIO({
+      onGit: (dir, args) => {
+        if (args[0] === "remote") {
+          const err = new Error("error: No such remote 'origin'");
+          throw err;
+        }
+      },
+      oldSkillDir: env.oldSkillDir,
+      newSkillDir: env.newSkillDir,
+    });
+    assert.throws(
+      () => prepare({ repoDir: env.repoDir, io: fake }),
+      (e) => {
+        assert.equal(e.code, "GO_UPDATE_ERROR");
+        assert.match(e.message, /no origin remote/);
+        assert.match(e.message, /GH_REPO=owner\/name/);
+        return true;
+      },
+      "missing origin names GH_REPO remediation",
+    );
+  } finally {
+    env.cleanup();
+  }
 }
 
 // --------------------------------------------------------------------------
