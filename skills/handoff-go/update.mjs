@@ -10,7 +10,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
@@ -521,18 +521,54 @@ function classifyTarget(target, source) {
   return { kind: "conflict", detail: `${target} differs from the pinned runtime bytes` };
 }
 
+// Verify every existing component of the target's parent chain (walking from
+// `repoDir` outward to `dirname(target)`) is a real, readable directory. A
+// symlink or non-directory anywhere in the chain is a conflict: `.omp` (or
+// `.omp/extensions`) could be a symlink redirecting the materialized bytes
+// outside the repository. A missing component is fine — it is created only after
+// the whole preflight succeeded, never through an existing symlink. Returns
+// `{ ok, needsCreate, detail }`; `needsCreate` means at least one parent dir is
+// absent and must be created in the (post-preflight) write phase.
+function classifyParentChain(repoDir, target) {
+  const parentRel = relative(repoDir, dirname(target));
+  if (parentRel === "" || parentRel === ".") return { ok: true, needsCreate: false };
+  if (parentRel.startsWith("..")) return { ok: false, detail: `${dirname(target)} escapes the repository` };
+  const parts = parentRel.split(/[\\/]+/).filter(Boolean);
+  let current = repoDir;
+  let needsCreate = false;
+  for (const part of parts) {
+    current = join(current, part);
+    let st;
+    try {
+      st = lstatSync(current);
+    } catch (e) {
+      if (e.code === "ENOENT") {
+        needsCreate = true;
+        continue;
+      }
+      return { ok: false, detail: `${current} cannot be inspected (${e.code || "error"})` };
+    }
+    if (needsCreate) return { ok: false, detail: `${current} exists beneath a missing parent` };
+    if (st.isSymbolicLink() || !st.isDirectory()) {
+      return { ok: false, detail: `${current} is not a real directory${st.isSymbolicLink() ? " (symlink)" : ""}` };
+    }
+  }
+  return { ok: true, needsCreate };
+}
+
 // Materialize the managed runtime bytes for a reliably detected harness from the
-// pinned skill source. All-or-nothing and fail-closed: preflight every target so
-// a missing one is created and an identical regular file is a no-op, but any
-// existing-but-different / non-regular / symlink target fails closed with
-// GO_UPDATE_CONFLICT and zero writes (never overwrite a divergent file, never
-// partially materialize). `harness` must come from `detectHarness`; an unknown
-// harness is a caller bug, so it fails closed rather than guessing.
+// pinned skill source. All-or-nothing and fail-closed: preflight every target
+// AND its parent chain so a missing target is created, an existing byte-identical
+// regular file is a no-op, but any existing-but-different / non-regular / symlink
+// target, or any symlink / non-directory / unreadable parent, fails closed with
+// GO_UPDATE_CONFLICT and zero writes — nothing is written inside or outside the
+// repository. `harness` must come from `detectHarness`; an unknown harness is a
+// caller bug, so it fails closed rather than guessing.
 // Returns the repo-relative paths that are now present and correct.
 export function materializeHarnessRuntime({ skillDir, repoDir, harness }) {
   const entries = HARNESS_RUNTIME[harness];
   if (!entries) throw new Error(`GO_UPDATE_ERROR unknown harness: ${harness}`);
-  // Preflight all targets before touching the filesystem.
+  // Preflight all targets and their parent chains before touching the filesystem.
   const conflictDetails = [];
   const plan = [];
   for (const [rel, src] of entries) {
@@ -541,18 +577,24 @@ export function materializeHarnessRuntime({ skillDir, repoDir, harness }) {
     if (!existsSync(source)) {
       throw new Error(`GO_UPDATE_ERROR pinned skill is missing runtime source ${src} (${source})`);
     }
+    const chain = classifyParentChain(repoDir, target);
+    if (!chain.ok) conflictDetails.push(`\`${rel}\`: ${chain.detail}`);
     const { kind, detail } = classifyTarget(target, source);
     if (kind === "conflict") conflictDetails.push(`\`${rel}\`: ${detail}`);
-    plan.push({ rel, target, source, kind });
+    plan.push({ rel, target, source, kind, chain });
   }
   if (conflictDetails.length) {
     throw conflicts(
-      `setup will not overwrite an existing OMP runtime copy: ${conflictDetails.join("; ")}. resolve the divergence (or remove the file) and re-run setup; use \`go update\` to refresh a recognized copy`,
+      `setup will not overwrite an existing OMP runtime copy or write through a bad parent: ${conflictDetails.join("; ")}. resolve the divergence (or remove the offending file/symlink) and re-run setup; use \`go update\` to refresh a recognized copy`,
     );
   }
   const ensured = [];
-  for (const { rel, target, source, kind } of plan) {
+  for (const { rel, target, source, kind, chain } of plan) {
     if (kind === "missing") {
+      // Defense-in-depth over the preflight: re-verify the parent chain is still
+      // real directories (never a symlink) immediately before writing.
+      const recheck = classifyParentChain(repoDir, target);
+      if (!recheck.ok) throw conflicts(`setup will not write through a bad parent: \`${rel}\`: ${recheck.detail}`);
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, readFileSync(source));
     }

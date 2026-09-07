@@ -1395,6 +1395,71 @@ function setupEnvironment() {
       rmSync(root, { recursive: true, force: true });
     }
   }
+
+  // Parent `.omp` is a symlink to outside the repo: conflict, zero writes — the
+  // follow-redirect would write outside. (Architect bounded case.)
+  {
+    const root = mkdtempSync(join(tmpdir(), "hg-mat-ompsym-"));
+    try {
+      const skillDir = join(root, "skill");
+      const repoDir = join(root, "repo");
+      const outside = join(root, "outside");
+      mkdirSync(join(skillDir, "adapters"), { recursive: true });
+      mkdirSync(repoDir, { recursive: true });
+      mkdirSync(outside, { recursive: true });
+      writeFileSync(join(skillDir, "watch.mjs"), "WATCH_CORE\n");
+      writeFileSync(join(skillDir, "adapters/watch.js"), "WATCH_ADAPTER\n");
+      // `.omp` itself is a symlink to outside the repo.
+      symlinkSync(outside, join(repoDir, ".omp"));
+
+      assert.throws(
+        () => materializeHarnessRuntime({ skillDir, repoDir, harness: "omp" }),
+        (e) => {
+          assert.equal(e.code, "GO_UPDATE_CONFLICT", ".omp symlink parent is a GO_UPDATE_CONFLICT");
+          assert.match(e.message, /\.omp.*not a real directory \(symlink\)/, "names the symlinked parent");
+          return true;
+        },
+      );
+      // Nothing escapes the repo: no file appears under the symlink target.
+      assert.deepEqual(existsSync(join(outside, "watch.mjs")), false, "no file written outside the repo");
+      assert.deepEqual(existsSync(join(outside, "extensions/handoff-go-watch.js")), false, "no extension file written outside");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  // Parent `.omp/extensions` is a symlink to outside the repo: conflict, zero
+  // writes (all-or-nothing — the real `.omp/watch.mjs` must not be created either).
+  {
+    const root = mkdtempSync(join(tmpdir(), "hg-mat-extsym-"));
+    try {
+      const skillDir = join(root, "skill");
+      const repoDir = join(root, "repo");
+      const outside = join(root, "outside");
+      mkdirSync(join(skillDir, "adapters"), { recursive: true });
+      mkdirSync(repoDir, { recursive: true });
+      mkdirSync(outside, { recursive: true });
+      writeFileSync(join(skillDir, "watch.mjs"), "WATCH_CORE\n");
+      writeFileSync(join(skillDir, "adapters/watch.js"), "WATCH_ADAPTER\n");
+      mkdirSync(join(repoDir, ".omp"), { recursive: true });
+      // `.omp/extensions` is a symlink to outside the repo.
+      symlinkSync(outside, join(repoDir, ".omp/extensions"));
+
+      assert.throws(
+        () => materializeHarnessRuntime({ skillDir, repoDir, harness: "omp" }),
+        (e) => {
+          assert.equal(e.code, "GO_UPDATE_CONFLICT", ".omp/extensions symlink parent is a GO_UPDATE_CONFLICT");
+          assert.match(e.message, /\.omp\/extensions.*not a real directory \(symlink\)/, "names the symlinked extensions parent");
+          return true;
+        },
+      );
+      // All-or-nothing: real `.omp/watch.mjs` is NOT created, and nothing escapes.
+      assert.ok(!existsSync(join(repoDir, ".omp/watch.mjs")), "zero writes — .omp/watch.mjs not created when extensions parent is invalid");
+      assert.deepEqual(existsSync(join(outside, "handoff-go-watch.js")), false, "no file written outside the repo");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
 }
 
 // AC-4 existing-adopter migration: `prepare` with a detected OMP harness brings
