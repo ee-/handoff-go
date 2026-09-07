@@ -17,3 +17,4 @@ jobs:
       - run: node tests/watch.test.mjs
       - run: node tests/update.test.mjs
       - run: node tests/bootstrap.test.mjs
+      - run: node tests/update-bootstrap.test.mjs
