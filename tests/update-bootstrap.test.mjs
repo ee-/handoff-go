@@ -83,7 +83,15 @@ function initFixedUpstream(updateSource) {
   git(work, "config", "user.name", "t");
   writeFileSync(
     join(work, "skills/handoff-go/update.mjs"),
-    updateSource || 'if (process.argv[2] === "prepare") { console.log("STUB_PREPARE_RAN"); process.exit(0); }\n',
+    updateSource ||
+      // A stub carrying the SAME direct-invocation guard as the production
+      // updater (realpath(import.meta.url) === realpath(process.argv[1])), so a
+      // load probe that passes the module path as argv[1] would be misread as a
+      // direct invocation (the regression the bootstrap must avoid).
+      'import { realpathSync } from "node:fs";\n' +
+      'import { fileURLToPath } from "node:url";\n' +
+      'const invokedDirectly = (() => { if (!process.argv[1]) return false; try { return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]); } catch { return false; } })();\n' +
+      'if (invokedDirectly) { if (process.argv[2] === "prepare") { console.log("STUB_PREPARE_RAN"); process.exit(0); } console.error("usage"); process.exit(2); }\n',
   );
   writeFileSync(join(work, "VERSION"), "1.0.0\n");
   git(work, "add", "-A");
@@ -305,7 +313,10 @@ function expectOutcome(res, token, re) {
     const { root, repo } = initConsumer(validBlock(sha));
     const res = runCommand(repo, { cacheHome: cache });
     assert.equal(res.status, 0, `happy path exits 0 (got ${res.status}): ${res.stdout}\n${res.stderr}`);
-    assert.ok(res.stdout.includes("STUB_PREPARE_RAN"), "materialized pinned updater prepare invoked");
+    // The load probe must NOT trip the updater's real invokedDirectly guard, and
+    // prepare must run exactly once (not twice, and never via the probe).
+    assert.equal((res.stdout.match(/STUB_PREPARE_RAN/g) || []).length, 1, "prepare invoked exactly once");
+    assert.ok(!res.stdout.includes("usage"), "load probe did not trip the direct-invocation guard");
     assert.ok(!/GO_UPDATE_(CONFLICT|ERROR)/.test(res.stdout), "happy path emits no canonical outcome wrapper");
   } finally {
     rmSync(cache, { recursive: true, force: true });
