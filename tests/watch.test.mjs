@@ -69,6 +69,16 @@ assert.equal(parseWatchCommand("go watch 30s").invalid, true, "invalid interval"
 assert.deepEqual(parseWatchCommand("go watch stop"), { kind: "stop" });
 assert.equal(parseWatchCommand("go build").kind, "none");
 
+// ---- canonical watch tick: minimal trigger, not a second protocol spec ----
+assert.equal(
+  WATCH_TICK_PROMPT,
+  "Handoff Go Coder watch tick.\n\nReload trusted governance and run exactly one normal Coder `go` cycle.",
+  "tick message is the minimal canonical trigger",
+);
+for (const dup of ["Security Gate", "NO_CODER_WORK", "precedence", "invent work", "immutable ref", "conversation context"]) {
+  assert.ok(!WATCH_TICK_PROMPT.includes(dup), `tick must not restate governance: ${dup}`);
+}
+
 // ---- universal adapter in both host shapes (managed OMP vs raw Pi) ----
 for (const shape of ["managed", "fallback"]) {
   const handled = { handled: true, action: "handled" };

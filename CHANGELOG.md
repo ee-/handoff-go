@@ -4,6 +4,17 @@
 
 Nothing released yet: no tag, no GitHub Release. Everything below is pending.
 
+Minimal Local Watch tick (issue #37):
+
+- `WATCH_TICK_PROMPT` is reduced to the minimal wake trigger (`tick = trigger`):
+  reload trusted governance and run exactly one normal Coder `go` cycle; the
+  duplicated Security Gate, precedence, discovery, `NO_CODER_WORK`, and
+  anti-invention sentences are removed — canonical `go` semantics live only in
+  the skill references (`skill = policy`, `GitHub = durable state`);
+- focused conformance test pins the exact minimal message and fails closed on
+  restated governance phrases; no lifecycle, fingerprint, routing, cadence,
+  dormancy, Event Watch, dependency, or abstraction changes.
+
 Repository identity across GitHub SSH host aliases (issue #35):
 
 - `go update` accepts a legitimate multi-account `git@<alias>:owner/repo.git`
