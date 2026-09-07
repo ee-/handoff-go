@@ -63,8 +63,12 @@ transaction, never by hand.
    ```
 
    It prints `ADAPTER_MATERIALIZED` with the paths it ensured, or
-   `ADAPTER_NONE` on a non-OMP/ambiguous harness (writing nothing). It never
-   starts a watcher and never claims one is active; `go watch` remains runtime
+   `ADAPTER_NONE` on a non-OMP/ambiguous harness (writing nothing). It preflights
+   every target: a missing one is created, an existing byte-identical regular
+   file is a no-op, and an existing-but-different, non-regular, or symlink target
+   fails closed with `GO_UPDATE_CONFLICT` and zero writes (all-or-nothing — setup
+   never overwrites a divergent copy or partially materializes). It never starts
+   a watcher and never claims one is active; `go watch` remains runtime
    activation only. A harness that cannot be reliably identified is never
    treated as OMP.
 

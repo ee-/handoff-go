@@ -9,7 +9,7 @@
 // promotion are decided in update.md — never here.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -501,26 +501,65 @@ function sameBytesValue(a, b) {
   return existsSync(a) && existsSync(b) && readFileSync(a).equals(readFileSync(b));
 }
 
+// Classify one materialization target against its pinned source, for the
+// all-or-nothing preflight:
+//   missing                          -> would be created
+//   existing + identical regular file -> no-op
+//   existing + different, non-regular, or uninspectable -> conflict
+function classifyTarget(target, source) {
+  let st;
+  try {
+    st = lstatSync(target);
+  } catch (e) {
+    if (e.code === "ENOENT") return { kind: "missing" };
+    return { kind: "conflict", detail: `${target} cannot be inspected (${e.code || "error"})` };
+  }
+  if (st.isSymbolicLink() || !st.isFile()) {
+    return { kind: "conflict", detail: `${target} is not a regular file` };
+  }
+  if (sameBytesValue(target, source)) return { kind: "identical" };
+  return { kind: "conflict", detail: `${target} differs from the pinned runtime bytes` };
+}
+
 // Materialize the managed runtime bytes for a reliably detected harness from the
-// pinned skill source, byte-identical and idempotent (re-running writes nothing
-// new when copies already match). `harness` must come from `detectHarness`; an
-// unknown harness is a caller bug, so it fails closed rather than guessing.
-// Returns the repo-relative paths that are now present.
+// pinned skill source. All-or-nothing and fail-closed: preflight every target so
+// a missing one is created and an identical regular file is a no-op, but any
+// existing-but-different / non-regular / symlink target fails closed with
+// GO_UPDATE_CONFLICT and zero writes (never overwrite a divergent file, never
+// partially materialize). `harness` must come from `detectHarness`; an unknown
+// harness is a caller bug, so it fails closed rather than guessing.
+// Returns the repo-relative paths that are now present and correct.
 export function materializeHarnessRuntime({ skillDir, repoDir, harness }) {
   const entries = HARNESS_RUNTIME[harness];
   if (!entries) throw new Error(`GO_UPDATE_ERROR unknown harness: ${harness}`);
-  const materialized = [];
+  // Preflight all targets before touching the filesystem.
+  const conflictDetails = [];
+  const plan = [];
   for (const [rel, src] of entries) {
     const target = join(repoDir, rel);
     const source = join(skillDir, src);
     if (!existsSync(source)) {
       throw new Error(`GO_UPDATE_ERROR pinned skill is missing runtime source ${src} (${source})`);
     }
-    mkdirSync(dirname(target), { recursive: true });
-    if (!sameBytesValue(target, source)) writeFileSync(target, readFileSync(source));
-    materialized.push(rel);
+    const { kind, detail } = classifyTarget(target, source);
+    if (kind === "conflict") conflictDetails.push(`\`${rel}\`: ${detail}`);
+    plan.push({ rel, target, source, kind });
   }
-  return materialized;
+  if (conflictDetails.length) {
+    throw conflicts(
+      `setup will not overwrite an existing OMP runtime copy: ${conflictDetails.join("; ")}. resolve the divergence (or remove the file) and re-run setup; use \`go update\` to refresh a recognized copy`,
+    );
+  }
+  const ensured = [];
+  for (const { rel, target, source, kind } of plan) {
+    if (kind === "missing") {
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, readFileSync(source));
+    }
+    // identical -> no-op (bytes already match); both count as ensured.
+    ensured.push(rel);
+  }
+  return ensured;
 }
 
 // Extract one upstream commit's skill tree locally (no network).

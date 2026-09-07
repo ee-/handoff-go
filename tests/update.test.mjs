@@ -2,7 +2,7 @@
 // Run: node tests/update.test.mjs
 
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1300,8 +1300,10 @@ function setupEnvironment() {
   );
 }
 
-// materializeHarnessRuntime: byte-identical, idempotent, fails closed on an
-// unknown harness. Covers AC-1 (first-setup) and AC-6 (idempotence/alignment).
+// materializeHarnessRuntime: byte-identical, idempotent, all-or-nothing fail-closed.
+// Covers AC-1 (first-setup create), AC-6 (idempotence) and the Architect's
+// bounded blocker (never overwrite a divergent / non-regular existing copy, never
+// partially materialize).
 {
   const root = mkdtempSync(join(tmpdir(), "hg-materialize-"));
   try {
@@ -1312,35 +1314,86 @@ function setupEnvironment() {
     writeFileSync(join(skillDir, "watch.mjs"), "WATCH_CORE\n");
     writeFileSync(join(skillDir, "adapters/watch.js"), "WATCH_ADAPTER\n");
 
-    // First setup materializes exactly the OMP pair.
+    // First setup: missing targets are created byte-identical.
     const first = materializeHarnessRuntime({ skillDir, repoDir, harness: "omp" });
     assert.deepEqual(first, [".omp/watch.mjs", ".omp/extensions/handoff-go-watch.js"], "OMP pair materialized");
-    const core = readFileSync(join(repoDir, ".omp/watch.mjs"), "utf8");
-    const adapter = readFileSync(join(repoDir, ".omp/extensions/handoff-go-watch.js"), "utf8");
-    assert.equal(core, "WATCH_CORE\n", "core byte-identical to pinned skill");
-    assert.equal(adapter, "WATCH_ADAPTER\n", "adapter byte-identical to pinned skill");
+    assert.equal(readFileSync(join(repoDir, ".omp/watch.mjs"), "utf8"), "WATCH_CORE\n", "core byte-identical to pinned skill");
+    assert.equal(readFileSync(join(repoDir, ".omp/extensions/handoff-go-watch.js"), "utf8"), "WATCH_ADAPTER\n", "adapter byte-identical to pinned skill");
 
-    // Re-running is idempotent: identical bytes, identical return.
+    // Re-running is an idempotent no-op (existing + identical).
     const second = materializeHarnessRuntime({ skillDir, repoDir, harness: "omp" });
     assert.deepEqual(second, first, "idempotent re-run reports the same paths");
     assert.equal(readFileSync(join(repoDir, ".omp/watch.mjs"), "utf8"), "WATCH_CORE\n", "no drift on re-run");
-
-    // A changed pinned source is propagated (update alignment), not silently kept.
-    writeFileSync(join(skillDir, "watch.mjs"), "WATCH_CORE_V2\n");
-    materializeHarnessRuntime({ skillDir, repoDir, harness: "omp" });
-    assert.equal(readFileSync(join(repoDir, ".omp/watch.mjs"), "utf8"), "WATCH_CORE_V2\n", "pinned update aligns runtime bytes");
 
     // Pi harness uses `.pi/`, never `.omp/`.
     const pi = materializeHarnessRuntime({ skillDir, repoDir, harness: "pi" });
     assert.deepEqual(pi, [".pi/watch.mjs", ".pi/extensions/handoff-go-watch.js"], "Pi pair materialized");
     assert.ok(existsSync(join(repoDir, ".omp/watch.mjs")), "OMP core still present after Pi materialization");
-    assert.equal(readFileSync(join(repoDir, ".pi/watch.mjs"), "utf8"), "WATCH_CORE_V2\n", "Pi core byte-identical");
+    assert.equal(readFileSync(join(repoDir, ".pi/watch.mjs"), "utf8"), "WATCH_CORE\n", "Pi core byte-identical");
 
     // An unknown harness is a caller bug: fails closed, never guesses.
     assert.throws(() => materializeHarnessRuntime({ skillDir, repoDir, harness: "bogus" }), /unknown harness/);
     assert.throws(() => materializeHarnessRuntime({ skillDir, repoDir, harness: null }), /unknown harness/);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+
+  // All-or-nothing: existing + different target is a conflict AND no write at all
+  // (the otherwise-missing first target is NOT created).
+  {
+    const root = mkdtempSync(join(tmpdir(), "hg-mat-conflict-"));
+    try {
+      const skillDir = join(root, "skill");
+      const repoDir = join(root, "repo");
+      mkdirSync(join(skillDir, "adapters"), { recursive: true });
+      mkdirSync(repoDir, { recursive: true });
+      writeFileSync(join(skillDir, "watch.mjs"), "WATCH_CORE\n");
+      writeFileSync(join(skillDir, "adapters/watch.js"), "WATCH_ADAPTER\n");
+      // Existing divergent extension file.
+      mkdirSync(join(repoDir, ".omp/extensions"), { recursive: true });
+      writeFileSync(join(repoDir, ".omp/extensions/handoff-go-watch.js"), "TAMPERED\n");
+
+      assert.throws(
+        () => materializeHarnessRuntime({ skillDir, repoDir, harness: "omp" }),
+        (e) => {
+          assert.equal(e.code, "GO_UPDATE_CONFLICT", "divergent existing copy is a GO_UPDATE_CONFLICT");
+          assert.match(e.message, /\.omp\/extensions\/handoff-go-watch\.js.*differs/, "names the divergent path");
+          return true;
+        },
+      );
+      // All-or-nothing: the missing .omp/watch.mjs was NOT created.
+      assert.ok(!existsSync(join(repoDir, ".omp/watch.mjs")), "zero writes — missing target not created when another conflicts");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  // A symlink target is not a regular file: conflict, zero writes.
+  {
+    const root = mkdtempSync(join(tmpdir(), "hg-mat-symlink-"));
+    try {
+      const skillDir = join(root, "skill");
+      const repoDir = join(root, "repo");
+      mkdirSync(join(skillDir, "adapters"), { recursive: true });
+      mkdirSync(repoDir, { recursive: true });
+      writeFileSync(join(skillDir, "watch.mjs"), "WATCH_CORE\n");
+      writeFileSync(join(skillDir, "adapters/watch.js"), "WATCH_ADAPTER\n");
+      mkdirSync(join(repoDir, ".omp/extensions"), { recursive: true });
+      // Symlink at the core target pointing elsewhere (hostile / stale).
+      symlinkSync(join(root, "elsewhere"), join(repoDir, ".omp/watch.mjs"));
+
+      assert.throws(
+        () => materializeHarnessRuntime({ skillDir, repoDir, harness: "omp" }),
+        (e) => {
+          assert.equal(e.code, "GO_UPDATE_CONFLICT", "symlink target is a GO_UPDATE_CONFLICT");
+          assert.match(e.message, /\.omp\/watch\.mjs.*not a regular file/, "names the non-regular path");
+          return true;
+        },
+      );
+      assert.ok(!existsSync(join(repoDir, ".omp/extensions/handoff-go-watch.js")), "zero writes — no target materialized");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 }
 
