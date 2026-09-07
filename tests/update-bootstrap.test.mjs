@@ -244,8 +244,27 @@ function expectOutcome(res, token, re) {
     prepStore(cache, bare);
     const { root, repo } = initConsumer(validBlock(sha));
     const res = runCommand(repo, { cacheHome: cache });
-    expectOutcome(res, "GO_UPDATE_ERROR", /pinned Handoff Go updater is not runnable/);
+    expectOutcome(res, "GO_UPDATE_ERROR", /pinned Handoff Go updater is not loadable/);
     assert.ok(!res.stdout.includes("STUB_PREPARE_RAN") && !res.stderr.includes("STUB_PREPARE_RAN"), "prepare is never invoked");
+  } finally {
+    rmSync(cache, { recursive: true, force: true });
+  }
+}
+
+// --------------------------------------------------------------------------
+// 4b2. A pinned updater with valid syntax but an unresolvable ES module import
+//      passes `node --check` but fails at module load; the bootstrap must emit
+//      exactly one GO_UPDATE_ERROR with no raw module-loader diagnostics.
+// --------------------------------------------------------------------------
+{
+  const cache = mkdtempSync(join(tmpdir(), "hg-boot-cache-"));
+  try {
+    const { bare, sha } = initFixedUpstream('import "./missing-module.mjs";\nconsole.log("should not reach here");\n');
+    prepStore(cache, bare);
+    const { root, repo } = initConsumer(validBlock(sha));
+    const res = runCommand(repo, { cacheHome: cache });
+    expectOutcome(res, "GO_UPDATE_ERROR", /pinned Handoff Go updater is not loadable/);
+    assert.ok(!res.stdout.includes("should not reach here") && !res.stderr.includes("should not reach here"), "updater body never executes");
   } finally {
     rmSync(cache, { recursive: true, force: true });
   }

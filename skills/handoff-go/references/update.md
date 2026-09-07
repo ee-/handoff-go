@@ -39,8 +39,8 @@ git -C "$STORE" archive --format=tar -o "$HG_TMP/tree.tar" "$REF" skills/handoff
   || { printf 'GO_UPDATE_ERROR\npinned Handoff Go %s carries no updater tree\n' "$REF"; rm -rf "$HG_TMP"; exit 1; }; \
 tar -xf "$HG_TMP/tree.tar" -C "$HG_TMP" 2>/dev/null \
   || { printf 'GO_UPDATE_ERROR\ncannot extract the pinned Handoff Go updater tree\n'; rm -rf "$HG_TMP"; exit 1; }; \
-node --check "$HG_TMP/skills/handoff-go/update.mjs" 2>/dev/null \
-  || { printf 'GO_UPDATE_ERROR\npinned Handoff Go updater is not runnable (syntax/load failure)\n'; rm -rf "$HG_TMP"; exit 1; }; \
+node -e 'import(process.argv[1]).catch(()=>process.exit(1))' "$HG_TMP/skills/handoff-go/update.mjs" 2>/dev/null \
+  || { printf 'GO_UPDATE_ERROR\npinned Handoff Go updater is not loadable (module import failed)\n'; rm -rf "$HG_TMP"; exit 1; }; \
 node "$HG_TMP/skills/handoff-go/update.mjs" prepare --repo-dir "$REPO"; RC=$?; [ -n "$HG_TMP" ] && rm -rf "$HG_TMP"; exit $RC
 ```
 
@@ -79,9 +79,12 @@ and preserves its output and exit status verbatim.
    `GO_UPDATE_ERROR`.
 7. `git archive` / `tar` extract the updater tree to a fresh temporary directory;
    an absent tree or extraction failure emits `GO_UPDATE_ERROR`.
-8. `node --check` verifies the materialized `update.mjs` is runnable; a syntax or
-   load failure emits `GO_UPDATE_ERROR` (corrupted pinned updater), not a raw
-   Node error.
+8. `node -e import(process.argv[1]).catch(...)` performs an actual module-load
+   check: it resolves the whole ES module dependency graph (imports), so a
+   valid-syntax-but-unresolvable-import or corrupted pinned updater fails here as
+   `GO_UPDATE_ERROR`, never a raw Node syntax/module-loader error. The module's
+   own top-level `invokedDirectly` guard keeps this side-effect-free (no
+   `prepare` runs).
 9. Node executes the materialized updater's `prepare` command against the target
    repository (`--repo-dir "$REPO"`). From here the bootstrap stops classifying:
    `prepare`'s output and exit status pass through verbatim.
