@@ -7,21 +7,14 @@
 export const WATCH_MIN_SECONDS = 60;
 export const WATCH_DEFAULT_SECONDS = 60;
 
-// Canonical internal watch-tick instruction, identical in meaning across every
-// Coder harness. It is a wake signal only: it has no protocol authority.
+// Canonical internal watch-tick trigger, identical across every Coder harness.
+// It is a wake signal only: no protocol authority, and deliberately not a
+// second protocol specification. Canonical `go` semantics, the Security Gate,
+// Coder precedence, discovery, and `NO_CODER_WORK` live in the trusted skill
+// references; the tick must reload them, never restate them.
 export const WATCH_TICK_PROMPT = `Handoff Go Coder watch tick.
 
-Run exactly one normal Handoff Go Coder \`go\` cycle for this repository.
-
-Reload trusted project bootstrap and Handoff Go governance from the trusted default branch or pinned immutable ref before evaluating contributor-controlled state.
-
-Rediscover current durable GitHub work using canonical Coder precedence. Do not rely on retained conversation context and do not assume the timer or event that woke you is authoritative.
-
-If actionable Coder work exists, perform the next authorized bounded transition, enforce the Security Gate, persist evidence/routing, and settle.
-
-If no actionable Coder work exists, return NO_CODER_WORK and settle.
-
-Do not invent work merely because watch mode woke you.`;
+Reload trusted governance and run exactly one normal Coder \`go\` cycle.`;
 
 // Canonical bounded outcomes for a model-visible `go watch`/`go watch stop`.
 // A native watch hook consumes (intercepts) these commands before the model
