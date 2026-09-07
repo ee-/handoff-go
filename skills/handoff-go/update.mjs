@@ -568,11 +568,20 @@ function ghSshHostResolved(io, host) {
 function defaultSshTransport(repoDir, io) {
   if (process.env.GIT_SSH || process.env.GIT_SSH_COMMAND) return false;
   for (const key of ["core.sshCommand", "ssh.variant"]) {
-    let value = "";
+    let value;
     try {
       value = io.git(repoDir, "config", "--get", key);
-    } catch {
-      /* unset or unreadable: git reports exit 1 for an absent key */
+    } catch (e) {
+      // The ordinary absent-key answer from `git config --get` is exit 1 with
+      // no fatal output. Anything else — unreadable/unparseable config (which
+      // still says "fatal: bad config line" even when it exits 1), a broken
+      // repo, a git failure — cannot prove no alternate transport exists, so
+      // the alias path fails closed here: before `ssh -G`, discovery, or
+      // mutation.
+      if (e?.status === 1 && !/fatal/i.test(String(e.stderr || ""))) continue;
+      throw errored(
+        `cannot verify git's SSH transport: the local config probe for ${key} failed (${firstLine(e)}); set GH_REPO=owner/name to declare the canonical GitHub identity`,
+      );
     }
     if (value) return false;
   }

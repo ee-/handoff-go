@@ -109,12 +109,20 @@ export function createRecordingFakeIO(options = {}) {
       if (cmd === "remote" && args[1] === "get-url") {
         res = options.originUrl || "https://github.com/ee-/handoff-go.git";
       } else if (cmd === "config") {
-        // Real `git config --get` exits 1 for an unset key; mirror that.
+        // Real `git config --get` semantics: exit 0 with the value when set;
+        // silent exit 1 when simply absent; exit 1 + "fatal:" stderr when the
+        // config itself is unparseable (modeled via configFatal).
         const key = args[args.length - 1];
         const val = key === "core.sshCommand" ? options.coreSshCommand
           : key === "ssh.variant" ? options.sshVariant : undefined;
         if (val) res = val;
-        else throw new Error("fatal: config key unset");
+        else {
+          const err = new Error(options.configFatal ? "fatal: bad config line 11 in file .git/config" : "config absent");
+          err.status = 1;
+          err.stderr = options.configFatal ? "fatal: bad config line 11 in file .git/config" : "";
+          if (options.configFatal128) { err.status = 128; err.stderr = "fatal: bad config"; }
+          throw err;
+        }
       } else if (cmd === "ls-remote") {
         if (options.lsRemoteError) throw options.lsRemoteError;
         res = (options.upstreamHead !== undefined ? options.upstreamHead : NEW_REF) + "\tHEAD";
@@ -1153,6 +1161,46 @@ function setupEnvironment() {
     }
   }
 }
+{
+  // Review blocker (AC-3): an ABNORMAL config-probe failure is not proof of
+  // "no alternate transport". Only the silent exit-1 absent answer may pass;
+  // fatal/unreadable results must fail closed BEFORE ssh -G, gh, or mutation —
+  // even when the alias would otherwise resolve to github.com.
+  for (const [label, opts] of [
+    ["exit 1 + fatal stderr (bad config line)", { configFatal: true }],
+    ["exit 128 (fatal)", { configFatal128: true }],
+  ]) {
+    const env = setupEnvironment();
+    const fake = createRecordingFakeIO({
+      originUrl: "git@gh-work:acme/widgets.git",
+      sshResolvedHost: "github.com", // would succeed if consulted — it must not be
+      oldSkillDir: env.oldSkillDir,
+      newSkillDir: env.newSkillDir,
+      ...opts,
+    });
+    try {
+      assert.throws(
+        () => prepare({ repoDir: env.repoDir, io: fake }),
+        (e) => {
+          assert.equal(e.code, "GO_UPDATE_ERROR", label);
+          assert.match(e.message, /cannot verify git's SSH transport/, label);
+          assert.match(e.message, /GH_REPO=owner\/name/, `${label}: remediation concrete`);
+          return true;
+        },
+        label,
+      );
+      assert.equal(fake.calls.some((c) => c.type === "ssh"), false, `${label}: ssh -G not consulted`);
+      assert.equal(fake.calls.some((c) => c.type === "gh"), false, `${label}: no GitHub discovery`);
+      assert.equal(fake.calls.some((c) => c.args?.includes("worktree")), false, `${label}: no mutation`);
+    } finally {
+      env.cleanup();
+    }
+  }
+  // Contrast: the ordinary silent absent-key exit still proceeds to the alias
+  // proof (covered implicitly by the AC-2 happy-alias test above, which relies
+  // on this same fake semantics and resolves).
+}
+
 
 {
   // AC-4: GH_REPO stays the explicit override — even ahead of a valid origin —
