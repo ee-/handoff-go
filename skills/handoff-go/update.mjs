@@ -150,6 +150,33 @@ export function parseManagedBlock(text) {
   };
 }
 
+// Minimal, forward-stable bootstrap classification used by `go update`'s
+// pre-updater check. Locates the unique managed block and its single Immutable
+// ref, and validates the ref as an immutable commit or tag. Deliberately
+// narrower than parseManagedBlock (no Skill/role fields), so a launcher can read
+// a newer pin without reinterpreting new schema. Governance-state failures throw
+// GO_UPDATE_CONFLICT; missing/unreadable input throws GO_UPDATE_ERROR. This is
+// the one clear failure boundary the bootstrap owns — the model never has to
+// inspect remotes, FETCH_HEAD, or bootstrap internals to classify a failure.
+export function classifyBootstrapRef(agentsText) {
+  const { inner } = locateBlock(String(agentsText || ""));
+
+  const refs = fields(inner, "Immutable ref").map(fieldValue);
+  if (refs.length !== 1) {
+    throw conflicts(`expected exactly one Immutable ref entry in managed block, found ${refs.length}`);
+  }
+  const immutableRef = refs[0];
+  if (!immutableRef) throw conflicts("empty Immutable ref in managed block");
+  // The pin becomes a git refspec, so only a commit SHA or a plain tag may pass.
+  if (!/^(?:[0-9a-f]{40}|[A-Za-z0-9][A-Za-z0-9._\/-]*)$/.test(immutableRef)) {
+    throw conflicts(`malformed Immutable ref in managed block: ${immutableRef}`);
+  }
+  if (/^(main|master|develop|trunk|HEAD)$/i.test(immutableRef)) {
+    throw conflicts(`refusing floating governance ref: ${immutableRef}`);
+  }
+  return { immutableRef };
+}
+
 // Replace the pin lines of the managed block; preserve every other byte,
 // including any leading inline backticks so surrounding formatting is intact.
 function replacePinLine(inner, label, value) {
@@ -649,14 +676,14 @@ export function materializePinned(ref, tmps) {
     try {
       run("git", ["-C", store, "fetch", "--depth", "1", "-q", UPSTREAM, ref]);
     } catch (e) {
-      throw conflicts(`cannot materialize trusted Handoff Go ${ref} from ${UPSTREAM}: ${firstLine(e)}`);
+      throw errored(`cannot materialize trusted Handoff Go ${ref} from ${UPSTREAM}: ${firstLine(e)}`);
     }
   }
   let skillDir;
   try {
     skillDir = extractSkill(store, ref, tmps);
   } catch (e) {
-    throw conflicts(
+    throw errored(
       `cannot read the ${UPSTREAM_SKILL} tree of trusted Handoff Go ${ref}: ${firstLine(e)}; remove ${store} to re-materialize from the immutable ref`,
     );
   }

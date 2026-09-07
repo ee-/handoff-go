@@ -11,6 +11,7 @@ import {
   UPSTREAM,
   HARNESS_RUNTIME,
   applyDeclarativeMigrations,
+  classifyBootstrapRef,
   detectHarness,
   materializeHarnessRuntime,
   materializePinned,
@@ -1552,6 +1553,80 @@ function setupEnvironment() {
   } finally {
     rmSync(outside, { recursive: true, force: true });
     env3.cleanup();
+  }
+}
+
+// --------------------------------------------------------------------------
+// 2e. go update bootstrap classification (Work Order #41)
+// --------------------------------------------------------------------------
+
+// classifyBootstrapRef: the bootstrap's one clear governance failure boundary.
+// The remote default-branch AGENTS.md is the sole input; the local checkout or a
+// local AGENTS.md is never consulted. Every expected failure is a canonical
+// GO_UPDATE_CONFLICT (governance state), never a silent exit.
+{
+  const valid = `# Consumer\n<!-- handoff-go:start -->\n## Handoff Go\n- Version: 1.0.0\n- Immutable ref: \`${OLD_REF}\`\n- Skill: \`skills/handoff-go/SKILL.md\`\nFor the exact ordinary-text messages \`go\` and \`go update\`, use the pinned Handoff Go skill above.\n<!-- handoff-go:end -->\n`;
+
+  // Valid immutable ref.
+  assert.deepEqual(classifyBootstrapRef(valid), { immutableRef: OLD_REF }, "valid pin extracted");
+
+  // AC-2: no managed block -> GO_UPDATE_CONFLICT (the observed class).
+  assert.throws(() => classifyBootstrapRef("# plain repo, no block\n"), (e) => {
+    assert.equal(e.code, "GO_UPDATE_CONFLICT");
+    assert.match(e.message, /no Handoff Go managed block found/);
+    return true;
+  });
+
+  // Duplicate managed blocks -> conflict.
+  assert.throws(() => classifyBootstrapRef(valid + valid), (e) => {
+    assert.equal(e.code, "GO_UPDATE_CONFLICT");
+    assert.match(e.message, /exactly one managed block/);
+    return true;
+  });
+
+  // AC-3: missing / duplicated / malformed / floating Immutable ref -> conflict.
+  const noRef = valid.replace("- Immutable ref: `"+OLD_REF+"`\n", "");
+  assert.throws(() => classifyBootstrapRef(noRef), (e) => {
+    assert.equal(e.code, "GO_UPDATE_CONFLICT");
+    assert.match(e.message, /exactly one Immutable ref entry/);
+    return true;
+  });
+
+  const dupRef = valid.replace("- Immutable ref: `"+OLD_REF+"`", "- Immutable ref: `"+OLD_REF+"`\n- Immutable ref: `"+NEW_REF+"`");
+  assert.throws(() => classifyBootstrapRef(dupRef), (e) => {
+    assert.equal(e.code, "GO_UPDATE_CONFLICT");
+    assert.match(e.message, /exactly one Immutable ref entry/);
+    return true;
+  });
+
+  const emptyRef = valid.replace("- Immutable ref: `"+OLD_REF+"`", "- Immutable ref: ");
+  assert.throws(() => classifyBootstrapRef(emptyRef), (e) => {
+    assert.equal(e.code, "GO_UPDATE_CONFLICT");
+    assert.match(e.message, /empty Immutable ref/);
+    return true;
+  });
+  // A backtick-empty span is malformed, not "empty".
+  const emptySpan = valid.replace("- Immutable ref: `"+OLD_REF+"`", "- Immutable ref: ``");
+  assert.throws(() => classifyBootstrapRef(emptySpan), (e) => {
+    assert.equal(e.code, "GO_UPDATE_CONFLICT");
+    assert.match(e.message, /malformed Immutable ref/);
+    return true;
+  });
+
+  const malformed = valid.replace("- Immutable ref: `"+OLD_REF+"`", "- Immutable ref: `not a ref!!`");
+  assert.throws(() => classifyBootstrapRef(malformed), (e) => {
+    assert.equal(e.code, "GO_UPDATE_CONFLICT");
+    assert.match(e.message, /malformed Immutable ref/);
+    return true;
+  });
+
+  for (const floating of ["main", "master", "HEAD", "develop"]) {
+    const f = valid.replace("- Immutable ref: `"+OLD_REF+"`", `- Immutable ref: \`${floating}\``);
+    assert.throws(() => classifyBootstrapRef(f), (e) => {
+      assert.equal(e.code, "GO_UPDATE_CONFLICT");
+      assert.match(e.message, /refusing floating governance ref/);
+      return true;
+    }, `floating ref ${floating} is a conflict`);
   }
 }
 
