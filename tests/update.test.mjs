@@ -1518,6 +1518,41 @@ function setupEnvironment() {
   } finally {
     env2.cleanup();
   }
+
+  // `.omp` is a symlink to outside the worktree: the create path must fail closed
+  // (GO_UPDATE_CONFLICT), all-or-nothing, nothing written outside the worktree.
+  const env3 = setupEnvironment();
+  const outside = mkdtempSync(join(tmpdir(), "hg-prep-outside-"));
+  try {
+    const fake = createRecordingFakeIO({
+      oldSkillDir: env3.oldSkillDir,
+      newSkillDir: env3.newSkillDir,
+      populateWorktree: (wt) => {
+        mkdirSync(join(wt, "skills/handoff-go/adapters"), { recursive: true });
+        writeFileSync(join(wt, "AGENTS.md"), SAMPLE_AGENTS);
+        writeFileSync(join(wt, "skills/handoff-go/SKILL.md"), SKILL_FRONTMATTER);
+        writeFileSync(join(wt, "skills/handoff-go/watch.mjs"), `export const version = "1.0.0";\n`);
+        writeFileSync(join(wt, "skills/handoff-go/adapters/watch.js"), `export default function watch() {}\n`);
+        writeFileSync(join(wt, "skills/handoff-go/migrations.json"), JSON.stringify({ version: 1, operations: [] }));
+        // `.omp` is a symlink pointing OUTSIDE the worktree.
+        symlinkSync(outside, join(wt, ".omp"));
+      },
+    });
+    assert.throws(
+      () => prepare({ repoDir: env3.repoDir, io: fake, harness: "omp" }),
+      (e) => {
+        assert.equal(e.code, "GO_UPDATE_CONFLICT", ".omp symlink parent in the create path is a GO_UPDATE_CONFLICT");
+        assert.match(e.message, /\.omp.*not a real directory \(symlink\)/, "names the symlinked parent");
+        return true;
+      },
+    );
+    // Nothing escapes the worktree.
+    assert.deepEqual(existsSync(join(outside, "watch.mjs")), false, "no core file written outside the worktree");
+    assert.deepEqual(existsSync(join(outside, "extensions/handoff-go-watch.js")), false, "no extension file written outside the worktree");
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+    env3.cleanup();
+  }
 }
 
 // --------------------------------------------------------------------------

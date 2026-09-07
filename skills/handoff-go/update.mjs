@@ -978,6 +978,14 @@ export function prepare(opts = {}, injectedIO) {
     }
     const present = [...Object.keys(RUNTIME), ...Object.keys(LEGACY)].filter((p) => existsSync(join(worktree, p)));
     const plan = planRuntime(present, harness);
+    // All-or-nothing parent-chain preflight BEFORE any write: the detected-harness
+    // `create` path must never write through a symlinked / non-directory parent
+    // (e.g. `.omp` or `.omp/extensions` pointing outside the repo). Fail closed
+    // here so the whole runtime refresh is atomic and nothing escapes the worktree.
+    for (const [rel] of plan.create) {
+      const chain = classifyParentChain(worktree, join(worktree, rel));
+      if (!chain.ok) throw conflicts(`update will not write through a bad parent: \`${rel}\`: ${chain.detail}`);
+    }
     for (const [rel, src] of plan.refresh) sameBytes(join(worktree, rel), join(oldSkill, src), rel);
     for (const [legacyRel, , src] of plan.migrate) {
       const legacyOld = join(oldSkill, "adapters/watch.mjs");
@@ -1013,6 +1021,10 @@ export function prepare(opts = {}, injectedIO) {
     }
     for (const [rel, src] of plan.create) {
       const target = join(worktree, rel);
+      // Defense-in-depth over the preflight: re-verify the parent chain is still
+      // real directories (never a symlink) immediately before writing.
+      const recheck = classifyParentChain(worktree, target);
+      if (!recheck.ok) throw conflicts(`update will not write through a bad parent: \`${rel}\`: ${recheck.detail}`);
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, readFileSync(join(newSkill, src)));
       ev.runtime.created.push(rel);
