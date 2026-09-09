@@ -1,11 +1,11 @@
 // Handoff Go Coder watch conformance test (mock harness, no LLM).
 // Run: node tests/watch.test.mjs
 import assert from "node:assert/strict";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseInterval, parseWatchCommand, WATCH_DEFAULT_SECONDS, WATCH_NOT_ACTIVE, WATCH_RESTART_REQUIRED, WATCH_TICK_PROMPT } from "../skills/handoff-go/watch.mjs";
+import { parseInterval, parseWatchCommand, WATCH_ACTIVE, WATCH_BUSY, WATCH_DEFAULT_SECONDS, WATCH_NOT_ACTIVE, WATCH_PENDING_WAKE, WATCH_RESTART_REQUIRED, WATCH_SETTLING, WATCH_SLEEPING, WATCH_STATUS_KEY, WATCH_TICK_PROMPT, WATCH_WAKE } from "../skills/handoff-go/watch.mjs";
 import watchAdapter, { getDurableStateFingerprint } from "../skills/handoff-go/adapters/watch.js";
 
 // Patch global timers once so raw fallback timer usage (e.g. Pi) is observable.
@@ -22,12 +22,17 @@ function makeEnv(shape = "managed") {
   const ctxIntervals = [];
   const ctxCleared = [];
   const notes = [];
+  const statuses = [];
   const api = {
     on(event, h) { (handlers[event] ??= []).push(h); },
-    sendMessage(msg, opts) { sent.push({ msg, opts }); return Promise.resolve(); },
+    // Real OMP `pi.sendMessage(...)` returns void, not a completion promise.
+    sendMessage(msg, opts) { sent.push({ msg, opts }); },
   };
   const ctx = {
-    ui: { notify: (msg) => notes.push(msg) },
+    ui: {
+      notify: (msg) => notes.push(msg),
+      setStatus: (key, text) => statuses.push({ key, text }),
+    },
     mode: "tui",
     cwd: "/tmp",
     isIdle: () => true,
@@ -37,7 +42,7 @@ function makeEnv(shape = "managed") {
     ctx.setInterval = (fn, ms) => { ctxIntervals.push({ fn, ms }); return 7000 + ctxIntervals.length; };
     ctx.clearTimer = (id) => { ctxCleared.push(id); };
   }
-  return { api, ctx, handlers, sent, ctxIntervals, ctxCleared, notes, shape };
+  return { api, ctx, handlers, sent, ctxIntervals, ctxCleared, notes, statuses, shape };
 }
 
 function emit(env, name, event) {
@@ -53,6 +58,25 @@ async function run(adapter, text, source = "interactive", opts = {}) {
   const inputResult = await emit(env, "input", { text, source });
   if (opts.shutdown !== false) emit(env, "session_shutdown", {});
   return { env, inputResult };
+}
+
+// Issue #44 helpers: activate a managed watcher, fire a native timer tick, emit
+// a real OMP `agent_end` lifecycle event, and read the native status stream.
+async function started(probe, opts = {}) {
+  const env = makeEnv(opts.shape ?? "managed");
+  watchAdapter(env.api, { probe, ...opts });
+  emit(env, "session_start", {});
+  await emit(env, "input", { text: "go watch", source: "interactive" });
+  return env;
+}
+function tickFn(env, shape = "managed") {
+  return shape === "managed" ? env.ctxIntervals.at(-1)?.fn : globalThis.__hgIntervals.at(-1)?.fn;
+}
+function agentEnd(env, extra = {}) {
+  return emit(env, "agent_end", { type: "agent_end", messages: [], ...extra });
+}
+function statusLog(env) {
+  return env.statuses.filter((s) => s.key === WATCH_STATUS_KEY).map((s) => s.text);
 }
 
 // ---- shared core ----
@@ -141,58 +165,236 @@ for (const shape of ["managed", "fallback"]) {
   assert.ok(clearedAfter > clearedBefore, `${shape}: stop clears timer`);
 }
 
-// ---- Durable-state fingerprint wake gate and watermark tests ----
+// ---- Durable-state fingerprint composition (real adapter parsing, local fake `gh`) ----
+// AC-1 issue-comment-only, AC-2 PR-conversation-comment-only, AC-3 PR
+// headRefOid, AC-12 pagination/API ambiguity -> unknown -> fail open.
 {
-  let currentFp = "fp_init";
-  const probe = () => currentFp;
-  const env = makeEnv("managed");
-  watchAdapter(env.api, { probe });
-  emit(env, "session_start", {});
-  await emit(env, "input", { text: "go watch", source: "interactive" });
-  assert.equal(env.sent.length, 1, "immediate first go runs");
+  const bin = mkdtempSync(join(tmpdir(), "hg-fake-gh-"));
+  const ghPath = join(bin, "gh");
+  writeFileSync(ghPath, '#!/bin/sh\nprintf %s "$HG_FAKE_GH_JSON"\n');
+  chmodSync(ghPath, 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}:${oldPath}`;
+  const fingerprintFor = (issues, prs, head = "head-1") => {
+    process.env.HG_FAKE_GH_JSON = JSON.stringify({
+      data: {
+        repository: {
+          defaultBranchRef: { target: { oid: head } },
+          issues: { pageInfo: { hasNextPage: false }, nodes: issues },
+          pullRequests: { pageInfo: { hasNextPage: false }, nodes: prs },
+        },
+      },
+    });
+    return getDurableStateFingerprint("/tmp");
+  };
+  try {
+    const base = fingerprintFor([{ number: 1, updatedAt: "t1" }], [{ number: 2, updatedAt: "t2", headRefOid: "h2" }]);
+    assert.equal(typeof base, "string", "fingerprint is composed from the exact GraphQL fields");
+    assert.notEqual(
+      fingerprintFor([{ number: 1, updatedAt: "t1-comment" }], [{ number: 2, updatedAt: "t2", headRefOid: "h2" }]),
+      base,
+      "AC-1: issue-comment-only update advances the fingerprint",
+    );
+    assert.notEqual(
+      fingerprintFor([{ number: 1, updatedAt: "t1" }], [{ number: 2, updatedAt: "t2-comment", headRefOid: "h2" }]),
+      base,
+      "AC-2: PR-conversation-comment-only update advances the fingerprint",
+    );
+    assert.notEqual(
+      fingerprintFor([{ number: 1, updatedAt: "t1" }], [{ number: 2, updatedAt: "t2", headRefOid: "h2-pushed" }]),
+      base,
+      "AC-3: PR headRefOid change advances the fingerprint",
+    );
+    assert.equal(
+      fingerprintFor([{ number: 1, updatedAt: "t1" }], [{ number: 2, updatedAt: "t2", headRefOid: "h2" }]),
+      base,
+      "unchanged durable state is a stable fingerprint",
+    );
+    process.env.HG_FAKE_GH_JSON = JSON.stringify({
+      data: {
+        repository: {
+          defaultBranchRef: { target: { oid: "head-1" } },
+          issues: { pageInfo: { hasNextPage: true }, nodes: [] },
+          pullRequests: { pageInfo: { hasNextPage: false }, nodes: [] },
+        },
+      },
+    });
+    assert.equal(getDurableStateFingerprint("/tmp"), null, "AC-12: pagination truncation -> unknown");
+    process.env.HG_FAKE_GH_JSON = "not-json";
+    assert.equal(getDurableStateFingerprint("/tmp"), null, "AC-12: API/parse failure -> unknown");
+    delete process.env.HG_FAKE_GH_JSON;
+    assert.equal(getDurableStateFingerprint("/tmp"), null, "AC-12: probe error -> unknown");
+  } finally {
+    process.env.PATH = oldPath;
+    delete process.env.HG_FAKE_GH_JSON;
+  }
+}
 
-  // Allow promise chain to settle and converge baseline to "fp_init"
-  await new Promise((r) => setTimeout(r, 10));
+// ---- Terminal settlement, watermark convergence, busy coalescing, status ----
+// AC-4 one Coder wake on an active-PR route change; AC-5 Coder changes durable
+// state during its own watch turn; AC-6 no convergence before native terminal
+// completion; AC-7 exactly one settling rediscovery; AC-8 convergence after it;
+// AC-9 subsequent dormancy; AC-10 busy coalescing; AC-11 second change during
+// the active turn; AC-12 probe failure fails open; AC-14 truthful status.
+{
+  let fp = "A";
+  const env = await started(() => fp);
+  const tick = tickFn(env);
+  assert.equal(env.sent.length, 1, "AC-4: activation performs one full Coder go");
+  assert.deepEqual(statusLog(env), [WATCH_ACTIVE, WATCH_WAKE], "AC-14: activation publishes active then wake");
 
-  // Next ticks with same fingerprint -> dormant (no new turn)
-  const tickFn = env.ctxIntervals[0].fn;
-  tickFn();
-  assert.equal(env.sent.length, 1, "same fingerprint -> no sendMessage (stays dormant)");
-  tickFn();
-  assert.equal(env.sent.length, 1, "repeated same fingerprint -> stays dormant");
+  // AC-6: while the watch-triggered Coder turn is running (host busy), ticks
+  // must not converge the baseline or start a second turn.
+  env.ctx.isIdle = () => false;
+  tick();
+  tick();
+  assert.equal(env.sent.length, 1, "AC-6/AC-10: in-flight watch turn never overlaps");
+  assert.equal(statusLog(env).at(-1), WATCH_WAKE, "AC-6: still in flight, not converged");
 
-  // Changed fingerprint -> wakes one normal go
-  currentFp = "fp_changed";
-  tickFn();
-  assert.equal(env.sent.length, 2, "changed fingerprint -> wakes one normal go");
+  // AC-5/AC-7: the turn terminally settles; the Coder changed durable state.
+  fp = "B";
+  env.ctx.isIdle = () => true;
+  agentEnd(env);
+  assert.equal(statusLog(env).at(-1), WATCH_SETTLING, "AC-7: changed settle requires a settling rediscovery");
+  tick();
+  assert.equal(env.sent.length, 2, "AC-7: exactly one settling rediscovery");
+  assert.equal(statusLog(env).at(-1), WATCH_WAKE, "AC-7: the settling rediscovery is a real wake");
+  env.ctx.isIdle = () => false; // the settling turn is running
+  tick();
+  assert.equal(env.sent.length, 2, "AC-7/AC-10: settling turn in flight, no overlap");
 
-  // State changes DURING turn: wakeFp was "fp_changed", but before settle state moves to "fp_in_flight"
-  currentFp = "fp_in_flight";
-  await new Promise((r) => setTimeout(r, 10)); // settles with mismatch
-  // Baseline did NOT converge to fp_in_flight; next tick must still wake
-  tickFn();
-  assert.equal(env.sent.length, 3, "state changed during turn -> next tick still wakes");
-  await new Promise((r) => setTimeout(r, 10)); // settles
+  // AC-8/AC-9: the settling turn sees stable state -> converges -> dormant.
+  env.ctx.isIdle = () => true;
+  agentEnd(env);
+  assert.equal(statusLog(env).at(-1), WATCH_SLEEPING, "AC-8: stable settle converges the watermark");
+  const statusCalls = env.statuses.length;
+  tick();
+  tick();
+  tick();
+  assert.equal(env.sent.length, 2, "AC-9: unchanged durable state stays dormant");
+  assert.equal(env.statuses.length, statusCalls, "AC-14: dormant ticks do not spam status");
 
-  // Stable before and after turn: wakeFp and settledFp match -> converges to dormant
-  currentFp = "fp_stable";
-  tickFn(); // wakes with fp_stable
-  assert.equal(env.sent.length, 4, "wakes on change to fp_stable");
-  await new Promise((r) => setTimeout(r, 10)); // settles with fp_stable -> converges
-  tickFn(); // next tick with fp_stable
-  assert.equal(env.sent.length, 4, "stable before/after -> converges and stays dormant");
+  // AC-12: probe ambiguity fails open (one wake) and never converges the baseline.
+  fp = null;
+  tick();
+  assert.equal(env.sent.length, 3, "AC-12: unknown probe fails open");
+  agentEnd(env);
+  assert.equal(statusLog(env).at(-1), WATCH_SETTLING, "AC-12: unknown settle never converges");
+  fp = "A";
+  tick();
+  assert.equal(env.sent.length, 4, "AC-12: the settling rediscovery still runs");
+  agentEnd(env);
+  assert.equal(statusLog(env).at(-1), WATCH_SLEEPING, "recovered probe converges after a full rediscovery");
+}
 
-  // Fail-open rule: probe returns null (error / auth / truncation) -> must wake
-  currentFp = null;
-  tickFn();
-  assert.equal(env.sent.length, 5, "probe failure (null) -> fails open and wakes");
-  await new Promise((r) => setTimeout(r, 10)); // settles
+// AC-10: a busy host coalesces to at most one pending wake; unchanged busy
+// ticks only publish WATCH_BUSY and never wake the model.
+{
+  let fp = "A";
+  const env = await started(() => fp);
+  const tick = tickFn(env);
+  agentEnd(env); // wakeFp A == settledFp A -> converged
+  assert.equal(statusLog(env).at(-1), WATCH_SLEEPING, "converged before the busy test");
 
-  // Stop -> no further wakes even if state changes
+  env.ctx.isIdle = () => false;
+  tick();
+  assert.equal(env.sent.length, 1, "AC-10: unchanged busy tick never wakes");
+  assert.equal(statusLog(env).at(-1), WATCH_BUSY, "AC-14: busy + unchanged publishes WATCH_BUSY");
+
+  fp = "B";
+  tick();
+  tick();
+  tick();
+  assert.equal(env.sent.length, 1, "AC-10: busy changes coalesce, never one wake per tick");
+  assert.equal(statusLog(env).at(-1), WATCH_PENDING_WAKE, "AC-14: coalesced wake is observable");
+
+  env.ctx.isIdle = () => true;
+  tick();
+  assert.equal(env.sent.length, 2, "AC-10: exactly one coalesced wake drains when idle");
+  assert.equal(statusLog(env).at(-1), WATCH_WAKE, "AC-14: drained wake is a real wake");
+}
+
+// AC-11: a second durable change arriving while the first Coder turn is active
+// is observed by one full subsequent rediscovery.
+{
+  let fp = "A";
+  const env = await started(() => fp);
+  const tick = tickFn(env);
+  fp = "B"; // second change during the active watch turn
+  agentEnd(env);
+  assert.equal(statusLog(env).at(-1), WATCH_SETTLING, "AC-11: active-turn change forces a rediscovery");
+  tick();
+  assert.equal(env.sent.length, 2, "AC-11: exactly one full rediscovery observes the change");
+}
+
+// Non-terminal agent_end (scheduled auto-retry / continuation) must not settle.
+{
+  let fp = "A";
+  const env = await started(() => fp);
+  fp = "B";
+  agentEnd(env, { willContinue: true });
+  assert.equal(statusLog(env).at(-1), WATCH_WAKE, "non-terminal agent_end does not settle");
+  assert.equal(env.sent.length, 1, "non-terminal agent_end does not wake");
+  agentEnd(env);
+  assert.equal(statusLog(env).at(-1), WATCH_SETTLING, "terminal agent_end settles");
+}
+
+// A queued wake that has not started must not settle, and an unrelated turn
+// with no wake in flight must not touch the watermark.
+{
+  let fp = "A";
+  const env = await started(() => fp);
+  const tick = tickFn(env);
+  agentEnd(env);
+  assert.equal(statusLog(env).at(-1), WATCH_SLEEPING, "converged");
+  agentEnd(env); // unrelated terminal turn, no wake in flight
+  assert.equal(statusLog(env).at(-1), WATCH_SLEEPING, "unrelated terminal turn is ignored");
+
+  fp = "B";
+  tick();
+  assert.equal(env.sent.length, 2, "changed state wakes");
+  fp = "C"; // the watch turn writes durable state
+  env.ctx.hasPendingMessages = () => true; // the follow-up wake is still queued
+  agentEnd(env);
+  assert.equal(statusLog(env).at(-1), WATCH_WAKE, "queued wake has not started: no settle");
+  env.ctx.hasPendingMessages = () => false;
+  agentEnd(env);
+  assert.equal(statusLog(env).at(-1), WATCH_SETTLING, "settle resumes once the wake really ran");
+}
+
+// Bounded fallback: a host that never emits a terminal agent_end settles on a
+// tick only when the session is idle with nothing queued.
+{
+  let fp = "A";
+  const env = await started(() => fp);
+  const tick = tickFn(env);
+  env.ctx.isIdle = () => false;
+  fp = "B";
+  tick();
+  assert.equal(env.sent.length, 1, "in-flight busy tick does not settle or wake");
+  env.ctx.isIdle = () => true;
+  tick();
+  assert.equal(statusLog(env).at(-1), WATCH_SETTLING, "idle tick fallback settles");
+  tick();
+  assert.equal(env.sent.length, 2, "fallback still yields exactly one settling rediscovery");
+}
+
+// AC-14: stop clears the native status surface.
+{
+  const env = await started(() => "A");
   await emit(env, "input", { text: "go watch stop", source: "interactive" });
-  currentFp = "fp_new";
-  tickFn();
-  assert.equal(env.sent.length, 5, "stopped watcher does not wake on tick");
+  assert.equal(statusLog(env).at(-1), undefined, "stop clears the runtime status");
+}
+
+// Stop -> no further wakes even if durable state changes.
+{
+  let fp = "A";
+  const env = await started(() => fp);
+  const tick = tickFn(env);
+  await emit(env, "input", { text: "go watch stop", source: "interactive" });
+  fp = "B";
+  tick();
+  assert.equal(env.sent.length, 1, "stopped watcher does not wake on tick");
 }
 
 // ---- Activation lifecycle: disk vs loaded vs active (Issue #33 AC-1/2/5) ----

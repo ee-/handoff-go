@@ -90,21 +90,50 @@ model:
 - **Changed state** → wakes exactly one normal Coder `go`.
 - **Fail-open rule** → on any probe ambiguity, missing `gh`, auth failure, or
   pagination truncation, it immediately fails open and runs normal Coder `go`.
-- **Observation-watermark rule** → the baseline fingerprint only advances when
-  state before and after an active turn matches (`wakeFp === settledFp`). If state
-  changes during a turn, the baseline stays unconverged so a subsequent tick runs
-  one settling `go`. Once state stabilizes, the watcher becomes dormant.
+- **Observation-watermark rule** → `pi.sendMessage(...)` returns `void`; it is
+  not a turn-completion promise, so the baseline never converges when the send
+  returns. Convergence happens only in the host's terminal `agent_end` lifecycle
+  event (`willContinue !== true`) for the watch-triggered turn: the adapter
+  probes the settled fingerprint there and advances the baseline only when
+  `wakeFp === settledFp`. A non-terminal `agent_end` (scheduled auto-retry or
+  continuation) and a terminal event while the queued wake has not started are
+  ignored. If state changed during the turn, the baseline stays unconverged and
+  exactly one subsequent tick runs a settling `go`. If the host never emits a
+  terminal `agent_end`, a tick settles only when the session is idle with
+  nothing queued — a bounded fallback, never a faster poll.
+
+## Runtime status (native, zero-token)
+
+The adapter publishes one bounded status value through the host's native status
+surface (`ctx.ui.setStatus`, feature-detected; unsupported hosts no-op) and only
+on a real transition. Unchanged dormant ticks publish nothing and wake nothing.
+
+| Status | Meaning |
+|---|---|
+| `WATCH_ACTIVE` | watch started in this session |
+| `WATCH_SLEEPING` | probe matches the converged baseline; zero model turns |
+| `WATCH_WAKE` | fingerprint changed and one Coder `go` wake was sent |
+| `WATCH_BUSY` | host busy, durable state unchanged; nothing queued |
+| `WATCH_PENDING_WAKE` | at most one coalesced wake/convergence check remains |
+| `WATCH_SETTLING` | the watch turn changed durable state; one convergence `go` required |
+
+Status is observability only. It is never workflow authority, is never emitted
+through a model turn, and the adapter never emits a model-level
+`WATCH_PICKED_UP` merely because a fingerprint changed.
 
 ## Watch-state rules
 
 Watch state is session/runtime control state only. It is never workflow
 authority and never a second source of workflow truth. Runtime-local data is
-limited to `active`, `interval`, repo/session identity, and a single pending
-wake flag. No new durable protocol state (e.g. `WATCHING`, `AUTO_CODER`) is
-introduced.
+limited to `active`, `interval`, repo/session identity, one in-flight wake flag,
+and one coalesced `pendingWake` flag. No new durable protocol state (e.g.
+`WATCHING`, `AUTO_CODER`) is introduced.
 
-At most one active Coder run per watched session. A busy tick coalesces to at
-most one pending wake; it never queues one wake per missed interval.
+At most one active Coder run per watched session. While the watch turn is in
+flight or the host is busy, a changed fingerprint is remembered as at most one
+`pendingWake` and drained by a later idle tick using a fresh probe; ticks never
+overlap turns and never queue one wake per missed interval. A busy tick whose
+probe still matches the baseline publishes `WATCH_BUSY` and wakes nothing.
 
 ## Invariants
 
