@@ -34,6 +34,19 @@ authorizes committing or pushing them.`;
 export const WATCH_NOT_ACTIVE = `WATCH_NOT_ACTIVE
 No watch timer was started in this session, so there is nothing to stop.
 A watcher from an earlier session died with that session.`;
+
+// Canonical runtime status values. The adapter publishes them through the
+// host's native status surface only (never a model turn), so the Owner can tell
+// sleeping / wake / busy / pending / settling apart without spending tokens.
+// Unchanged dormant ticks publish nothing new.
+export const WATCH_STATUS_KEY = "handoff-go-watch";
+export const WATCH_ACTIVE = "WATCH_ACTIVE";
+export const WATCH_SLEEPING = "WATCH_SLEEPING";
+export const WATCH_WAKE = "WATCH_WAKE";
+export const WATCH_BUSY = "WATCH_BUSY";
+export const WATCH_PENDING_WAKE = "WATCH_PENDING_WAKE";
+export const WATCH_SETTLING = "WATCH_SETTLING";
+
 const UNIT_SECONDS = { s: 1, m: 60, h: 3600 };
 
 // Parse `go watch <interval>`. Accepts "", undefined, "60", "60s", "1m", "5m",

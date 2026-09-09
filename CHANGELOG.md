@@ -4,6 +4,27 @@
 
 Nothing released yet: no tag, no GitHub Release. Everything below is pending.
 
+Local Watch terminal settlement, busy coalescing, and runtime status (issue #44):
+
+- the observation watermark converges only inside the host's terminal
+  `agent_end` lifecycle event (`willContinue !== true`) for the watch-triggered
+  turn — `pi.sendMessage(...)` returns `void`, so the previous
+  `Promise.resolve(...).finally(...)` probe could advance the baseline before a
+  full Coder rediscovery finished; non-terminal continuations and a terminal
+  event while the queued wake has not started are ignored, with a bounded
+  idle-tick fallback for hosts that never emit one;
+- a busy host or in-flight watch turn coalesces a changed fingerprint into at
+  most one `pendingWake`, drained by a later idle tick with a fresh probe; busy
+  ticks with unchanged durable state publish `WATCH_BUSY` and wake nothing;
+- bounded native runtime status (`WATCH_ACTIVE` / `WATCH_SLEEPING` /
+  `WATCH_WAKE` / `WATCH_BUSY` / `WATCH_PENDING_WAKE` / `WATCH_SETTLING`) is
+  published through `ctx.ui.setStatus` only on transitions, never through a
+  model turn; no `WATCH_PICKED_UP`, no scheduler, no new durable state;
+- fingerprint composition unchanged; focused conformance tests cover
+  issue-comment / PR-comment / headRefOid field changes against a local fake
+  `gh`, terminal settlement, exactly one settling rediscovery, busy coalescing,
+  fail-open probe ambiguity, and status truthfulness.
+
 Minimal Local Watch tick (issue #37):
 
 - `WATCH_TICK_PROMPT` is reduced to the minimal wake trigger (`tick = trigger`):

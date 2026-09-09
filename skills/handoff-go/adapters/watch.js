@@ -15,12 +15,35 @@
 //   On any probe failure, API error, or pagination truncation, it fails open
 //   and executes a normal Coder `go`.
 //
-// Observation-watermark rule:
-//   Baseline fingerprint only converges when state before and after an active
-//   turn matches (`wakeFp === settledFp`). If state changes during a turn,
-//   the baseline does not advance, ensuring a follow-up settling tick runs.
+// Terminal-settlement rule:
+//   `pi.sendMessage(...)` returns void; it is NOT a turn-completion promise.
+//   The observation baseline converges only inside a terminal `agent_end`
+//   lifecycle event (`willContinue !== true`) for the watch-triggered turn, so a
+//   durable change written during that turn can never be swallowed before one
+//   full Coder rediscovery. A non-terminal `agent_end` (auto-retry / scheduled
+//   continuation) and a terminal `agent_end` while the queued wake has not
+//   started are ignored. A tick may settle only as a bounded fallback when the
+//   host never emitted a terminal event: session idle and nothing queued.
+//
+// Busy / coalescing rule:
+//   While the watch turn is in flight, or the host is busy, at most one
+//   `pendingWake` is remembered. Ticks never overlap turns and never queue one
+//   wake per missed interval. A busy tick with unchanged durable state only
+//   publishes `WATCH_BUSY`; it never wakes the model.
 import { execFileSync } from "node:child_process";
-import { parseWatchCommand, WATCH_DEFAULT_SECONDS, WATCH_NOT_ACTIVE, WATCH_TICK_PROMPT } from "../watch.mjs";
+import {
+  parseWatchCommand,
+  WATCH_ACTIVE,
+  WATCH_BUSY,
+  WATCH_DEFAULT_SECONDS,
+  WATCH_NOT_ACTIVE,
+  WATCH_PENDING_WAKE,
+  WATCH_SETTLING,
+  WATCH_SLEEPING,
+  WATCH_STATUS_KEY,
+  WATCH_TICK_PROMPT,
+  WATCH_WAKE,
+} from "../watch.mjs";
 
 export function getDurableStateFingerprint(cwd) {
   try {
@@ -71,10 +94,12 @@ export default function handoffGoWatch(pi, options = {}) {
   let active = false;
   let intervalSeconds = WATCH_DEFAULT_SECONDS;
   let timerId = null;
-  let pending = false;
   let sessionCtx = null;
   let baselineFingerprint = null;
   let wakeFingerprint = null;
+  let wakeInFlight = false; // exactly one watch-triggered Coder turn is running
+  let pendingWake = false; // at most one coalesced wake / convergence check
+  let lastStatus; // dedupe native status updates (no UI spam)
 
   function clearTimer() {
     if (timerId != null) {
@@ -84,41 +109,110 @@ export default function handoffGoWatch(pi, options = {}) {
     }
   }
 
-  function sendTick(wakeFp) {
-    if (pending) return;
-    pending = true;
-    wakeFingerprint = wakeFp;
+  // Native runtime status: host UI surface only, never a model turn. Feature-
+  // detected so unsupported/unverified hosts degrade to no-ops.
+  function setStatus(status, ctx) {
+    if (status === lastStatus) return;
+    lastStatus = status;
+    try {
+      (ctx || sessionCtx)?.ui?.setStatus?.(WATCH_STATUS_KEY, status);
+    } catch {
+      // Best-effort observability only.
+    }
+  }
 
-    Promise.resolve(
+  function clearStatus(ctx) {
+    lastStatus = undefined;
+    try {
+      (ctx || sessionCtx)?.ui?.setStatus?.(WATCH_STATUS_KEY, undefined);
+    } catch {
+      // Best-effort observability only.
+    }
+  }
+
+  function idle(ctx) {
+    const c = ctx || sessionCtx;
+    return !c?.isIdle || c.isIdle();
+  }
+
+  function queued(ctx) {
+    const c = ctx || sessionCtx;
+    return !!(c?.hasPendingMessages && c.hasPendingMessages());
+  }
+
+  function sendWake(fp, ctx) {
+    wakeInFlight = true;
+    wakeFingerprint = fp;
+    try {
       pi.sendMessage(
         { content: WATCH_TICK_PROMPT, display: true, attribution: "user" },
         { triggerTurn: true, deliverAs: "followUp" }
-      )
-    ).finally(() => {
-      pending = false;
-      // Observation-watermark rule:
-      // Probe again after the turn settles.
-      const settledFp = probe(sessionCtx?.cwd);
-      if (wakeFingerprint != null && settledFp != null && wakeFingerprint === settledFp) {
-        // State did not change during the turn -> safe to converge baseline
-        baselineFingerprint = settledFp;
-      }
-      // If wakeFingerprint !== settledFp, keep baseline unconverged so next tick runs
-    });
+      );
+      setStatus(WATCH_WAKE, ctx);
+    } catch {
+      // No turn exists, so never hold a phantom in-flight wake. The baseline
+      // stays unconverged and the next tick retries the wake.
+      wakeInFlight = false;
+      wakeFingerprint = null;
+    }
+  }
+
+  // The only place the observation watermark may converge. Driven by the
+  // terminal `agent_end` lifecycle event, or by the bounded tick fallback above.
+  function settle(ctx) {
+    if (!wakeInFlight) return;
+    wakeInFlight = false;
+    const settledFp = probe((ctx || sessionCtx)?.cwd);
+    if (wakeFingerprint != null && settledFp != null && wakeFingerprint === settledFp) {
+      // The watch turn observed stable durable state: converge and go dormant.
+      baselineFingerprint = settledFp;
+      pendingWake = false;
+      setStatus(WATCH_SLEEPING, ctx);
+      return;
+    }
+    // Durable state moved during the turn, or the probe is unknown: keep the
+    // baseline unconverged and require exactly one full settling rediscovery.
+    pendingWake = true;
+    setStatus(WATCH_SETTLING, ctx);
   }
 
   function onTick() {
     if (!active) return;
-    if (sessionCtx?.isIdle && !sessionCtx.isIdle()) return; // busy: coalesce, no overlap
-    if (pending) return;                                   // at most one pending wake
+    const ctx = sessionCtx;
 
-    const currentFp = probe(sessionCtx?.cwd);
-
-    // Fail-open rule: wake if probe is unknown/error (null), baseline unconverged (null),
-    // or durable state has changed since baseline.
-    if (currentFp == null || baselineFingerprint == null || currentFp !== baselineFingerprint) {
-      sendTick(currentFp);
+    if (wakeInFlight) {
+      // Never overlap a live turn. A tick may settle only when the session is
+      // provably idle with nothing queued — the bounded fallback for a host
+      // that never emitted a terminal `agent_end`.
+      if (!idle(ctx) || queued(ctx)) return;
+      settle(ctx);
+      return;
     }
+
+    const currentFp = probe(ctx?.cwd);
+    const needsWake =
+      pendingWake ||
+      currentFp == null ||
+      baselineFingerprint == null ||
+      currentFp !== baselineFingerprint;
+    if (!idle(ctx)) {
+      // Never wake or overlap while the host is busy: remember at most one
+      // pending wake (drained by a later idle tick) or publish truthful busy.
+      if (needsWake) {
+        pendingWake = true;
+        setStatus(WATCH_PENDING_WAKE, ctx);
+      } else {
+        setStatus(WATCH_BUSY, ctx);
+      }
+      return;
+    }
+    if (!needsWake) {
+      pendingWake = false;
+      setStatus(WATCH_SLEEPING, ctx);
+      return;
+    }
+    pendingWake = false;
+    sendWake(currentFp, ctx);
   }
 
   function start(seconds, ctx) {
@@ -127,6 +221,9 @@ export default function handoffGoWatch(pi, options = {}) {
     sessionCtx = ctx;
     baselineFingerprint = null;
     wakeFingerprint = null;
+    wakeInFlight = false;
+    pendingWake = false;
+    lastStatus = undefined;
     clearTimer();
 
     if (ctx?.setInterval) {
@@ -138,13 +235,22 @@ export default function handoffGoWatch(pi, options = {}) {
     }
 
     ctx.ui?.notify?.(`Handoff Go watch: ${intervalSeconds / 60}m`, "info");
+    setStatus(WATCH_ACTIVE, ctx);
 
     // Immediate first discovery before the first wait
-    const firstFp = probe(ctx?.cwd);
-    sendTick(firstFp);
+    sendWake(probe(ctx?.cwd), ctx);
 
     return { handled: true, action: "handled" };
   }
+
+  pi.on("agent_end", (event, ctx) => {
+    if (!active || !wakeInFlight) return;
+    // A scheduled auto-retry / continuation is not a terminal settle.
+    if (event?.willContinue === true) return;
+    // The queued wake has not started yet: the drain owns that turn.
+    if (queued(ctx) || !idle(ctx)) return;
+    settle(ctx);
+  });
 
   pi.on("input", async (event, ctx) => {
     if (event.source === "extension") return; // injected wake: continue normally
@@ -156,6 +262,9 @@ export default function handoffGoWatch(pi, options = {}) {
       clearTimer();
       baselineFingerprint = null;
       wakeFingerprint = null;
+      wakeInFlight = false;
+      pendingWake = false;
+      clearStatus(ctx);
       // AC-5: never invent an active watcher to stop. A stop before any start
       // in this session reports the canonical not-active outcome instead.
       ctx.ui?.notify?.(wasActive ? "Handoff Go watch stopped" : WATCH_NOT_ACTIVE, "info");
@@ -170,10 +279,13 @@ export default function handoffGoWatch(pi, options = {}) {
     }
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (_event, ctx) => {
     clearTimer();
     active = false;
     baselineFingerprint = null;
     wakeFingerprint = null;
+    wakeInFlight = false;
+    pendingWake = false;
+    clearStatus(ctx);
   });
 }
